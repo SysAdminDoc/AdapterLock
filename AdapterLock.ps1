@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-# AdapterLock v0.2.0
+# AdapterLock v0.3.0
 # Per-adapter IP lockdown via registry ACL on Tcpip\Parameters\Interfaces\{GUID}
 # Blocks ncpa.cpl / netsh / Set-NetIPAddress from modifying the selected NIC,
 # even for local administrators. Unlock restores normal ACLs.
@@ -7,6 +7,9 @@
 # GUI mode  : .\AdapterLock.ps1
 # CLI mode  : .\AdapterLock.ps1 -Lock   [-Adapter <name>|-Mac <mac>|-Guid <guid>] [-Silent] [-DryRun]
 #             .\AdapterLock.ps1 -Unlock [-Adapter <name>|-Mac <mac>|-Guid <guid>] [-Silent] [-DryRun]
+#             .\AdapterLock.ps1 -LoadPolicy <file> [-Silent]
+#             .\AdapterLock.ps1 -InstallTask [-PolicyFile <file>]
+#             .\AdapterLock.ps1 -UninstallTask
 
 [CmdletBinding()]
 param(
@@ -16,11 +19,17 @@ param(
     [string]$Mac,
     [string]$Guid,
     [switch]$Silent,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$LoadPolicy,
+    [switch]$InstallTask,
+    [switch]$UninstallTask,
+    [string]$PolicyFile
 )
 
-$script:IsCli    = $Silent.IsPresent -or (($Lock.IsPresent -or $Unlock.IsPresent) -and ($Adapter -or $Mac -or $Guid))
+
+$script:IsCli    = $Silent.IsPresent -or (($Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $InstallTask.IsPresent -or $UninstallTask.IsPresent) -and ($Adapter -or $Mac -or $Guid -or $LoadPolicy -or $InstallTask.IsPresent -or $UninstallTask.IsPresent))
 $script:IsDryRun = $DryRun.IsPresent
+
 
 #region Self-elevate + hide console
 $ErrorActionPreference = 'Stop'
@@ -69,9 +78,10 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName PresentationFramework
     Add-Type -AssemblyName PresentationCore
     Add-Type -AssemblyName WindowsBase
+    Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.2.0'
+$script:Version   = '0.3.0'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -119,6 +129,132 @@ function Get-NicType {
     if ($desc -match 'WAN Miniport|L2TP|PPTP|PPPoE|Tunnel|6to4|Teredo|ISATAP')             { return 'Tunl' }
     return 'Phys'
 }
+
+function Get-NicTypeGlyph {
+    param([string]$Type)
+    # Segoe MDL2 Assets glyphs
+    $glyphs = @{
+        'Phys'  = [char]0xE7F8   # PhysicalNetwork
+        'WiFi'  = [char]0xE702   # WiFi
+        'Virt'  = [char]0xE721   # VirtualMachine
+        'Tunl'  = [char]0xE784   # VPN
+        'Loop'  = [char]0xE81D   # LoopArrow
+    }
+    return $glyphs[$Type] ?? $Type
+}
+
+function Get-RegistryLastWrite {
+    param([string]$Path)
+    if (-not ([System.Management.Automation.PSTypeName]'AdapterLock.RegistryUtil').Type) {
+        Add-Type -Namespace AdapterLock -Name RegistryUtil -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+private static extern long RegOpenKeyEx(System.IntPtr hKey, string lpSubKey, int ulOptions, int samDesired, out System.IntPtr phkResult);
+[System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+private static extern long RegQueryInfoKey(System.IntPtr hKey, System.Text.StringBuilder lpClass, ref uint lpcClass,
+    IntPtr lpReserved, out uint lpcSubKeys, out uint lpcMaxSubKeyLen, out uint lpcMaxClassLen, out uint lpcValues,
+    out uint lpcMaxValueNameLen, out uint lpcMaxValueLen, out uint lpcSecurityDescriptor,
+    out System.Runtime.InteropServices.ComTypes.FILETIME lpftLastWriteTime);
+[System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+private static extern long RegCloseKey(System.IntPtr hKey);
+private const long HKEY_LOCAL_MACHINE = 0x80000002L;
+private const int KEY_READ = 0x20019;
+public static System.DateTime GetKeyLastWrite(string path) {
+    System.IntPtr hKey = System.IntPtr.Zero;
+    try {
+        if (RegOpenKeyEx(new System.IntPtr(HKEY_LOCAL_MACHINE), path, 0, KEY_READ, out hKey) != 0) return System.DateTime.MinValue;
+        System.Runtime.InteropServices.ComTypes.FILETIME ft = new System.Runtime.InteropServices.ComTypes.FILETIME();
+        uint c = 0, mc = 0, cl = 0, v = 0, mvn = 0, mvl = 0, sec = 0;
+        if (RegQueryInfoKey(hKey, null, ref c, System.IntPtr.Zero, out var sub, out var msub, out var mcl, out var vals, out mvn, out mvl, out sec, out ft) != 0)
+            return System.DateTime.MinValue;
+        long hft = ((long)ft.dwHighDateTime << 32) | (uint)ft.dwLowDateTime;
+        return hft > 0 ? System.DateTime.FromFileTime(hft) : System.DateTime.MinValue;
+    } finally { if (hKey != System.IntPtr.Zero) RegCloseKey(hKey); }
+}
+'@
+    }
+    try {
+        $subPath = $Path -replace '^HKLM:\\', ''
+        $dt = [AdapterLock.RegistryUtil]::GetKeyLastWrite($subPath)
+        return $dt -ne [DateTime]::MinValue ? $dt : $null
+    } catch {
+        return $null
+    }
+}
+
+function Export-LockPolicy {
+    param([string]$Path)
+    $policy = @{
+        Version = $script:Version
+        Timestamp = (Get-Date -Format 'o')
+        Adapters = @()
+    }
+    try {
+        Get-AdapterRows | ForEach-Object {
+            if ($_.IsLocked) {
+                $policy.Adapters += @{
+                    Name = $_.Name
+                    MAC = $_.MAC
+                    GUID = $_.Guid
+                    State = if ($_.LockBadge -eq 'LOCKED') { 'locked' } else { 'partial' }
+                }
+            }
+        }
+    } catch { }
+    $policy | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Path -Encoding UTF8
+    Write-AppLog "Policy exported: $Path ($($policy.Adapters.Count) adapters)" 'OK'
+}
+
+function Import-LockPolicy {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-AppLog "Policy file not found: $Path" 'ERROR'
+        return @()
+    }
+    try {
+        $policy = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -ErrorAction Stop
+        Write-AppLog "Policy loaded: $Path ($($policy.Adapters.Count) adapters)" 'OK'
+        return $policy.Adapters
+    } catch {
+        Write-AppLog "Policy parse failed: $($_.Exception.Message)" 'ERROR'
+        return @()
+    }
+}
+
+function Install-EnforcementTask {
+    param([string]$PolicyPath = '')
+    $taskName = 'AdapterLock-Enforce'
+    $scriptPath = $PSCommandPath
+    if (-not $PolicyPath) {
+        $PolicyPath = Join-Path $env:ProgramData 'AdapterLock\policy.json'
+    }
+    $action = if ($PolicyPath -and (Test-Path -LiteralPath $PolicyPath)) {
+        New-ScheduledTaskAction -Execute 'powershell.exe' `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -LoadPolicy `"$PolicyPath`" -Silent"
+    } else {
+        New-ScheduledTaskAction -Execute 'powershell.exe' `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -DryRun -Silent"
+    }
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId SYSTEM -RunLevel Highest
+    try {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    } catch { }
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
+    Write-AppLog "Enforcement task installed: $taskName (runs at startup)" 'OK'
+    Write-EvtLog "Enforcement task installed on $env:COMPUTERNAME"
+}
+
+function Uninstall-EnforcementTask {
+    $taskName = 'AdapterLock-Enforce'
+    try {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+        Write-AppLog "Enforcement task removed: $taskName" 'OK'
+        Write-EvtLog "Enforcement task removed on $env:COMPUTERNAME"
+    } catch {
+        Write-AppLog "Task removal failed: $($_.Exception.Message)" 'WARN'
+    }
+}
+
 
 function Get-InterfaceKeyPaths {
     param([string]$Guid)
@@ -273,6 +409,7 @@ function Get-AdapterRows {
                  Select-Object -First 1 -ExpandProperty IPAddress) -as [string]
         if (-not $ipv4) { $ipv4 = '-' }
 
+        $lastChanged = Get-RegistryLastWrite -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
         $detail = Test-AdapterLockedDetailed -Guid $guid
         $badge  = if     ($detail.V4Locked -and ($detail.V6Locked -or -not $detail.V6Exists)) { 'LOCKED'   }
                   elseif ($detail.V4Locked -or $detail.V6Locked -or $detail.NetBTLocked)       { 'PARTIAL'  }
@@ -285,11 +422,13 @@ function Get-AdapterRows {
 
         $rows.Add([pscustomobject]@{
             NicType    = Get-NicType -A $a
+            NicTypeGlyph = Get-NicTypeGlyph -Type (Get-NicType -A $a)
             Name       = $a.Name
             Description = $a.InterfaceDescription
             MAC        = $a.MacAddress
             IPv4       = $ipv4
             Status     = $a.Status
+            LastChanged = if ($lastChanged) { $lastChanged.ToString('yyyy-MM-dd HH:mm') } else { '-' }
             LockBadge  = $badge
             LockDetail = $lockDetail
             Guid       = $guid
@@ -322,6 +461,33 @@ function Find-AdapterByIdentifier {
 #region CLI / silent mode
 if ($script:IsCli) {
     Initialize-EventSource
+
+    if ($InstallTask) {
+        Write-AppLog "AdapterLock v$($script:Version) installing enforcement task"
+        Install-EnforcementTask -PolicyPath $PolicyFile
+        exit 0
+    }
+    if ($UninstallTask) {
+        Write-AppLog "AdapterLock v$($script:Version) uninstalling enforcement task"
+        Uninstall-EnforcementTask
+        exit 0
+    }
+    if ($LoadPolicy) {
+        Write-AppLog "AdapterLock v$($script:Version) loading policy: $LoadPolicy"
+        $policy = Import-LockPolicy -Path $LoadPolicy
+        if ($policy.Count -eq 0) { exit 1 }
+        foreach ($p in $policy) {
+            $adapter = Find-AdapterByIdentifier -ByName $p.Name -ByMac $p.MAC -ByGuid $p.GUID
+            if ($adapter) {
+                Lock-Adapter -Guid $adapter.InterfaceGuid -Name $adapter.Name
+                Write-AppLog "Policy enforced: $($adapter.Name)"
+            } else {
+                Write-AppLog "Policy target not found: $($p.Name) / $($p.MAC)" 'WARN'
+            }
+        }
+        exit 0
+    }
+
     Write-AppLog "AdapterLock v$($script:Version) CLI started. Lock=$($Lock.IsPresent) Unlock=$($Unlock.IsPresent) DryRun=$($script:IsDryRun)"
 
     if (-not ($Lock -or $Unlock)) {
@@ -488,7 +654,7 @@ if ($script:IsCli) {
         <!-- Header -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
             <TextBlock Text="AdapterLock" FontSize="22" FontWeight="Bold" Foreground="{StaticResource Mauve}"/>
-            <TextBlock x:Name="VersionText" Text=" v0.2.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
+            <TextBlock x:Name="VersionText" Text=" v0.3.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
         </StackPanel>
         <TextBlock Grid.Row="1" Margin="0,0,0,12"
                    Text="Per-adapter IP lockdown via registry ACL. Locks Tcpip\Interfaces\{GUID} so ncpa.cpl, netsh, and Set-NetIPAddress all fail - even for local admins. Right-click a row for more options."
@@ -497,12 +663,19 @@ if ($script:IsCli) {
         <!-- Adapter grid -->
         <DataGrid Grid.Row="2" x:Name="AdapterGrid">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Type"        Binding="{Binding NicType}"      Width="55"/>
+                <DataGridTemplateColumn Header="Type" Width="50">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding NicTypeGlyph}" FontFamily="Segoe MDL2 Assets" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn Header="Name"        Binding="{Binding Name}"         Width="130"/>
                 <DataGridTextColumn Header="Description" Binding="{Binding Description}"  Width="*"/>
                 <DataGridTextColumn Header="MAC"         Binding="{Binding MAC}"          Width="140"/>
                 <DataGridTextColumn Header="IPv4"        Binding="{Binding IPv4}"         Width="130"/>
                 <DataGridTextColumn Header="Status"      Binding="{Binding Status}"       Width="80"/>
+                <DataGridTextColumn Header="Changed"     Binding="{Binding LastChanged}"  Width="140"/>
                 <DataGridTemplateColumn Header="Lock" Width="110">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
@@ -534,6 +707,8 @@ if ($script:IsCli) {
             <Button x:Name="LockBtn"     Content="Lock Selected"   Margin="0,0,8,0"/>
             <Button x:Name="UnlockBtn"   Content="Unlock Selected" Margin="0,0,8,0"/>
             <Button x:Name="RefreshBtn"  Content="Refresh"         Margin="0,0,8,0"/>
+            <Button x:Name="SavePolicyBtn" Content="Save Policy"    Margin="0,0,8,0"/>
+            <Button x:Name="LoadPolicyBtn" Content="Load Policy"    Margin="0,0,8,0"/>
             <Button x:Name="OpenNcpaBtn" Content="Open ncpa.cpl"   Margin="0,0,8,0"/>
             <Button x:Name="OpenLogBtn"  Content="Open Log Folder"/>
         </StackPanel>
@@ -571,6 +746,8 @@ $script:VersionText = $window.FindName('VersionText')
 $LockBtn     = $window.FindName('LockBtn')
 $UnlockBtn   = $window.FindName('UnlockBtn')
 $RefreshBtn  = $window.FindName('RefreshBtn')
+$SavePolicyBtn = $window.FindName('SavePolicyBtn')
+$LoadPolicyBtn = $window.FindName('LoadPolicyBtn')
 $OpenNcpaBtn = $window.FindName('OpenNcpaBtn')
 $OpenLogBtn  = $window.FindName('OpenLogBtn')
 
@@ -695,6 +872,34 @@ function Apply-ToSelected {
 $LockBtn.Add_Click({     Apply-ToSelected -Action 'Lock' })
 $UnlockBtn.Add_Click({   Apply-ToSelected -Action 'Unlock' })
 $RefreshBtn.Add_Click({  Refresh-Grid })
+$SavePolicyBtn.Add_Click({
+    $dlg = New-Object System.Windows.Forms.SaveFileDialog
+    $dlg.Filter = 'JSON files (*.json)|*.json'
+    $dlg.InitialDirectory = $env:ProgramData
+    $dlg.FileName = 'adapter-policy.json'
+    if ($dlg.ShowDialog() -eq 'OK') {
+        Export-LockPolicy -Path $dlg.FileName
+        $script:StatusText.Text = "Policy saved: $(Split-Path $dlg.FileName -Leaf)"
+    }
+})
+$LoadPolicyBtn.Add_Click({
+    $dlg = New-Object System.Windows.Forms.OpenFileDialog
+    $dlg.Filter = 'JSON files (*.json)|*.json'
+    $dlg.InitialDirectory = $env:ProgramData
+    if ($dlg.ShowDialog() -eq 'OK') {
+        $policy = Import-LockPolicy -Path $dlg.FileName
+        if ($policy.Count -gt 0) {
+            foreach ($p in $policy) {
+                $a = Find-AdapterByIdentifier -ByName $p.Name -ByMac $p.MAC -ByGuid $p.GUID
+                if ($a) { [void](Lock-Adapter -Guid $a.InterfaceGuid -Name $a.Name) }
+            }
+            Refresh-Grid
+            $script:StatusText.Text = "Policy loaded: $($policy.Count) adapter(s)"
+        } else {
+            $script:StatusText.Text = 'Failed to load policy.'
+        }
+    }
+})
 $OpenNcpaBtn.Add_Click({ try { Start-Process 'ncpa.cpl' } catch { Write-AppLog "ncpa open failed: $($_.Exception.Message)" 'ERROR' } })
 $OpenLogBtn.Add_Click({  try { Start-Process (Split-Path $script:LogPath) } catch { } })
 

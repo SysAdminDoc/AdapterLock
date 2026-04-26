@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.0 — 2026-04-26
+
+### Added
+- **JSON policy file** — `Export-LockPolicy` / `Import-LockPolicy`; Save/Load Policy buttons in GUI; declarative `{adapter, state}` for fleet deployment.
+- **Scheduled enforcement task** — `Install-EnforcementTask` / `Uninstall-EnforcementTask` registers a Task Scheduler job that re-applies policy at startup.
+- **Last-changed registry timestamp** — P/Invoke `RegQueryInfoKey` to read FILETIME from Tcpip key; displayed in new "Changed" column (yyyy-MM-dd HH:mm).
+- **Adapter type glyphs** — replaces text (Phys/WiFi/Virt/Tunl/Loop) with Segoe MDL2 Assets icons (network / wifi / vm / vpn / arrow glyphs).
+- **CLI policy loading** — `-LoadPolicy <file>` applies saved policy from the command line (compatible with Intune/SCCM).
+- **CLI task management** — `-InstallTask [-PolicyFile <file>]` and `-UninstallTask` to manage scheduled enforcement from scripts.
+
 ## v0.2.0 — 2026-04-26
 
 ### Added

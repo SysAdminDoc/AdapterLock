@@ -15,16 +15,16 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs. Planned work foc
 ### UX / GUI
 - [x] **NIC type column** — shows Phys / WiFi / Virt / Tunl / Loop _(v0.2.0)_
 - [x] **Per-row context menu** — right-click: Lock, Unlock, Open in ncpa.cpl, Copy MAC, Copy GUID; PreviewMouseRightButtonDown ensures correct row is selected _(v0.2.0)_
-- [ ] **Adapter icon column** — replace text NIC type with icon glyph
-- [ ] **Last-changed timestamp** — from registry key `LastWriteTime` (requires P/Invoke on PS 5.1)
+- [x] **Adapter icon column** — Segoe MDL2 Assets glyphs (network/wifi/vm/vpn/arrow) replacing text type labels _(v0.3.0)_
+- [x] **Last-changed timestamp** — from registry key `LastWriteTime` via P/Invoke; yyyy-MM-dd HH:mm format in new "Changed" column _(v0.3.0)_
 - [ ] **Dark Catppuccin Mocha theme** — ComboBox ControlTemplate (not needed until a ComboBox is added)
 - [x] **Log viewer pane** — tails `adapterlock.log` inside the GUI _(v0.0.1)_
 
 ### Fleet / enterprise
 - [x] **`-Silent` CLI mode** — `AdapterLock.ps1 -Lock -Adapter "Ethernet" -Silent` for Intune / SCCM / GPO startup script deployment _(v0.2.0)_
 - [x] **`-DryRun` preview mode** — logs exact ACE changes that would be applied; does not commit _(v0.2.0)_
-- [ ] **JSON policy file** — declarative `{adapter: mac|guid|name, state: locked|unlocked}` consumed by GUI and CLI
-- [ ] **Scheduled enforcement task installer** — Task Scheduler job that re-applies policy on boot / every N minutes
+- [x] **JSON policy file** — `Export-LockPolicy` / `Import-LockPolicy` / Save+Load Policy GUI buttons; `-LoadPolicy <file>` CLI param _(v0.3.0)_
+- [x] **Scheduled enforcement task installer** — `Install-EnforcementTask` / `Uninstall-EnforcementTask` with `-InstallTask` and `-UninstallTask` params _(v0.3.0)_
 - [x] **Event Log channel** — Lock/Unlock events written to Windows Application log, source `AdapterLock`, EventId 1001 _(v0.2.0)_
 
 ### Safety

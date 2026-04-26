@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.2.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.3.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -67,6 +67,8 @@ Hover over the badge for a per-stack breakdown tooltip (e.g. `v4 + v6`, `v4 only
 
 Right-click any row to: **Lock**, **Unlock**, **Open in ncpa.cpl**, **Copy MAC**, or **Copy GUID**.
 
+**Save Policy** / **Load Policy** — export the current lock state as JSON, then apply it on another machine or at startup via the enforcement task.
+
 Changes take effect immediately — no reboot, no service restart.
 
 ### CLI / silent mode (Intune, SCCM, GPO startup scripts)
@@ -86,6 +88,15 @@ Changes take effect immediately — no reboot, no service restart.
 
 # Preview only — shows what would change, no registry writes
 .\AdapterLock.ps1 -Lock -Adapter "Ethernet" -Silent -DryRun
+
+# Load and apply a policy file
+.\AdapterLock.ps1 -LoadPolicy C:\policy.json -Silent
+
+# Install a scheduled task that re-applies the policy at startup
+.\AdapterLock.ps1 -InstallTask -PolicyFile C:\policy.json
+
+# Remove the scheduled enforcement task
+.\AdapterLock.ps1 -UninstallTask
 ```
 
 Exit codes: `0` = success, `1` = adapter not found / operation failed, `2` = bad arguments.
@@ -109,4 +120,4 @@ Opening TCP/IPv4 properties in `ncpa.cpl` and clicking OK on a changed value wil
 
 ## Version
 
-v0.2.0
+v0.3.0
