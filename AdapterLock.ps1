@@ -81,6 +81,12 @@
 .PARAMETER UninstallWatcher
     Remove the AdapterLock WMI drift watcher.
 
+.PARAMETER Report
+    Generate an HTML fleet report of lock state across remote hosts (use with -ComputerName).
+
+.PARAMETER OutputFile
+    Path for the HTML report file. Defaults to adapterlock-report-{timestamp}.html in the current directory.
+
 .EXAMPLE
     .\AdapterLock.ps1
     Launch the WPF GUI for interactive lock/unlock.
@@ -128,11 +134,13 @@ param(
     [switch]$Query,
     [string[]]$ComputerName,
     [switch]$InstallWatcher,
-    [switch]$UninstallWatcher
+    [switch]$UninstallWatcher,
+    [switch]$Report,
+    [string]$OutputFile
 )
 
 
-$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent -or $InstallWatcher.IsPresent -or $UninstallWatcher.IsPresent
+$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent -or $InstallWatcher.IsPresent -or $UninstallWatcher.IsPresent -or $Report.IsPresent
 $script:IsDryRun = $DryRun.IsPresent
 
 
@@ -819,6 +827,58 @@ function Invoke-RemoteLockQuery {
     }
 }
 
+function Export-LockReport {
+    param([string]$OutputFile, [object[]]$Data)
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $hosts = ($Data | Select-Object -ExpandProperty Computer -Unique).Count
+    $locked = ($Data | Where-Object { $_.Locked -eq 'LOCKED' }).Count
+    $partial = ($Data | Where-Object { $_.Locked -eq 'PARTIAL' }).Count
+    $unlocked = ($Data | Where-Object { $_.Locked -eq 'Unlocked' }).Count
+
+    $tableRows = foreach ($r in ($Data | Sort-Object Computer, Adapter)) {
+        $color = switch ($r.Locked) {
+            'LOCKED'   { '#f38ba8' }
+            'PARTIAL'  { '#f9e2af' }
+            'Unlocked' { '#a6e3a1' }
+            default    { '#cdd6f4' }
+        }
+        "        <tr><td>$($r.Computer)</td><td>$($r.Adapter)</td><td>$($r.GUID)</td><td>$($r.Mode)</td><td style=`"color:$color;font-weight:bold`">$($r.Locked)</td><td>$($r.Detail)</td></tr>"
+    }
+
+    $html = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>AdapterLock Fleet Report</title>
+<style>
+body{background:#1e1e2e;color:#cdd6f4;font-family:'Segoe UI',sans-serif;margin:2em}
+h1{color:#cba6f7}
+.summary{margin:1em 0;color:#a6adc8}
+table{border-collapse:collapse;width:100%}
+th{background:#11111b;color:#cba6f7;text-align:left;padding:10px 12px;border-bottom:2px solid #45475a}
+td{padding:8px 12px;border-bottom:1px solid #313244}
+tr:hover{background:#313244}
+.footer{margin-top:2em;color:#585b70;font-size:0.85em}
+</style>
+</head>
+<body>
+<h1>AdapterLock Fleet Report</h1>
+<div class="summary">Generated $ts | $hosts host(s) | $locked locked | $partial partial | $unlocked unlocked</div>
+<table>
+    <thead><tr><th>Host</th><th>Adapter</th><th>GUID</th><th>Mode</th><th>Lock State</th><th>Detail</th></tr></thead>
+    <tbody>
+$($tableRows -join "`n")
+    </tbody>
+</table>
+<div class="footer">AdapterLock v$($script:Version)</div>
+</body>
+</html>
+"@
+    Set-Content -LiteralPath $OutputFile -Value $html -Encoding UTF8 -ErrorAction Stop
+    Write-AppLog "Fleet report written: $OutputFile ($($Data.Count) rows)" 'OK'
+}
+
 function Get-AdapterRow {
     param([switch]$ShowHidden)
     $rows = New-Object System.Collections.ObjectModel.ObservableCollection[object]
@@ -979,6 +1039,20 @@ if ($script:IsCli) {
         $results = Invoke-RemoteLockQuery -Targets $ComputerName
         if ($results.Count -eq 0) { exit 1 }
         $results | Format-Table -AutoSize
+        exit 0
+    }
+    if ($Report) {
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-AppLog 'Specify -ComputerName with -Report' 'ERROR'
+            exit 2
+        }
+        if (-not $OutputFile) {
+            $OutputFile = Join-Path (Get-Location) "adapterlock-report-$(Get-Date -Format 'yyyyMMdd-HHmmss').html"
+        }
+        Write-AppLog "AdapterLock v$($script:Version) generating fleet report"
+        $results = Invoke-RemoteLockQuery -Targets $ComputerName
+        if ($results.Count -eq 0) { exit 1 }
+        Export-LockReport -OutputFile $OutputFile -Data $results
         exit 0
     }
 

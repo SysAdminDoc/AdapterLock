@@ -117,6 +117,9 @@ Changes take effect immediately — no reboot, no service restart.
 
 # Remove the WMI drift watcher
 .\AdapterLock.ps1 -UninstallWatcher
+
+# Generate HTML fleet report
+.\AdapterLock.ps1 -Report -ComputerName (Get-Content hosts.txt) -OutputFile report.html
 ```
 
 Exit codes: `0` = success, `1` = adapter not found / operation failed / drift detected, `2` = bad arguments.

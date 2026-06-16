@@ -204,6 +204,23 @@ Describe 'AdapterLock core functions' {
         ($paths | Where-Object { $_ -match 'NetBT\\Parameters\\Interfaces' }) | Should Not BeNullOrEmpty
     }
 
+    It 'generates HTML fleet report with correct structure' {
+        Import-AdapterLockFunction -Name 'Export-LockReport'
+        $script:Version = 'test'
+        $data = @(
+            [pscustomobject]@{ Computer = 'HOST1'; Adapter = 'Ethernet'; GUID = '{aaa}'; Mode = 'Static'; Locked = 'LOCKED'; Detail = 'v4+v6' }
+            [pscustomobject]@{ Computer = 'HOST2'; Adapter = 'Wi-Fi'; GUID = '{bbb}'; Mode = 'DHCP'; Locked = 'Unlocked'; Detail = '-' }
+        )
+        $reportPath = Join-Path $TestDrive 'test-report.html'
+        Export-LockReport -OutputFile $reportPath -Data $data
+        $html = Get-Content $reportPath -Raw
+        $html | Should Match 'AdapterLock Fleet Report'
+        $html | Should Match 'HOST1'
+        $html | Should Match 'HOST2'
+        $html | Should Match 'LOCKED'
+        $html | Should Match 'Unlocked'
+    }
+
     It 'classifies NIC types' {
         Import-AdapterLockFunction -Name 'Get-NicType'
 
