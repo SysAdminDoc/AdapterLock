@@ -1,3 +1,15 @@
+<#PSScriptInfo
+.VERSION 0.7.0
+.GUID fd499ba1-8ce6-4512-877e-9dede49777f5
+.AUTHOR SysAdminDoc
+.DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
+.COPYRIGHT (c) 2026 SysAdminDoc. All rights reserved.
+.TAGS networking adapter lock registry ACL IP security PACS
+.LICENSEURI https://github.com/SysAdminDoc/AdapterLock/blob/master/LICENSE
+.PROJECTURI https://github.com/SysAdminDoc/AdapterLock
+.RELEASENOTES Lock integrity verifier, adapter filter, remote query, policy validation.
+#>
+
 <#
 .SYNOPSIS
     Per-adapter IP lockdown via registry ACL deny ACEs.
@@ -170,7 +182,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.6.0'
+$script:Version   = '0.7.0'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -1037,7 +1049,7 @@ if ($script:IsCli) {
         <!-- Header -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
             <TextBlock Text="AdapterLock" FontSize="22" FontWeight="Bold" Foreground="{StaticResource Mauve}"/>
-            <TextBlock x:Name="VersionText" Text=" v0.6.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
+            <TextBlock x:Name="VersionText" Text=" v0.7.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
         </StackPanel>
         <TextBlock Grid.Row="1" Margin="0,0,0,8"
                    Text="Per-adapter IP lockdown via registry ACL. Locks Tcpip\Interfaces\{GUID} so ncpa.cpl, netsh, and Set-NetIPAddress all fail - even for local admins. Right-click a row for more options."

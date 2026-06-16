@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.6.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.7.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -143,4 +143,4 @@ Invoke-ScriptAnalyzer -Path .\AdapterLock.ps1 -Severity Error,Warning
 
 ## Version
 
-v0.6.0
+v0.7.0
