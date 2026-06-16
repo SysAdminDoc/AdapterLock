@@ -51,6 +51,12 @@
 .PARAMETER PolicyFile
     Path to the policy file used by -InstallTask. Defaults to %ProgramData%\AdapterLock\policy.json.
 
+.PARAMETER VerifyLocks
+    Check all locked adapters (or policy targets) for ACL drift and report status.
+
+.PARAMETER Remediate
+    When used with -VerifyLocks, automatically re-apply deny ACEs on adapters with drift.
+
 .EXAMPLE
     .\AdapterLock.ps1
     Launch the WPF GUI for interactive lock/unlock.
@@ -92,11 +98,13 @@ param(
     [switch]$RestoreBackup,
     [switch]$InstallTask,
     [switch]$UninstallTask,
-    [string]$PolicyFile
+    [string]$PolicyFile,
+    [switch]$VerifyLocks,
+    [switch]$Remediate
 )
 
 
-$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent
+$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent
 $script:IsDryRun = $DryRun.IsPresent
 
 
@@ -591,6 +599,63 @@ function Unlock-Adapter {
     return $false
 }
 
+function Test-LockIntegrity {
+    param([switch]$Fix)
+    $policyPath = Join-Path $env:ProgramData 'AdapterLock\policy.json'
+    if (-not (Test-Path -LiteralPath $policyPath)) {
+        Write-AppLog 'No policy file found; verifying all currently-locked adapters' 'INFO'
+        $targets = @()
+        try {
+            $adapters = Get-NetAdapter -IncludeHidden:$false -ErrorAction Stop
+        } catch {
+            Write-AppLog "Get-NetAdapter failed: $($_.Exception.Message)" 'ERROR'
+            return @()
+        }
+        foreach ($a in $adapters) {
+            if (Test-AdapterLocked -Guid $a.InterfaceGuid) {
+                $targets += [pscustomobject]@{ Name = $a.Name; GUID = $a.InterfaceGuid }
+            }
+        }
+    } else {
+        $targets = @(Import-LockPolicy -Path $policyPath)
+        if ($targets.Count -eq 0) {
+            Write-AppLog 'Policy file is empty or invalid' 'WARN'
+            return @()
+        }
+    }
+
+    $results = @()
+    foreach ($t in $targets) {
+        $guid = $t.GUID
+        $name = if ($t.Name) { $t.Name } else { $guid }
+        $detail = Test-AdapterLockedDetailed -Guid $guid
+        $expected = $true
+        $actual = $detail.V4Locked -and ($detail.V6Locked -or -not $detail.V6Exists) -and $detail.NetBTLocked
+        $status = if ($actual) { 'OK' } else { 'DRIFT' }
+
+        $results += [pscustomobject]@{
+            Adapter   = $name
+            GUID      = $guid
+            Status    = $status
+            V4        = $detail.V4Locked
+            V6        = $detail.V6Locked
+            NetBT     = $detail.NetBTLocked
+        }
+
+        if ($status -eq 'DRIFT') {
+            Write-AppLog "DRIFT detected: $name ($guid) - V4=$($detail.V4Locked) V6=$($detail.V6Locked) NetBT=$($detail.NetBTLocked)" 'WARN'
+            Write-EvtLog "Lock drift detected: $name ($guid) on $env:COMPUTERNAME" 'Warning'
+            if ($Fix) {
+                Write-AppLog "Remediating drift for $name ($guid)" 'INFO'
+                Lock-Adapter -Guid $guid -Name $name | Out-Null
+            }
+        } else {
+            Write-AppLog "OK: $name ($guid) - all locks intact" 'INFO'
+        }
+    }
+    return $results
+}
+
 function Get-AdapterRow {
     $rows = New-Object System.Collections.ObjectModel.ObservableCollection[object]
     try {
@@ -697,6 +762,21 @@ if ($script:IsCli) {
                 Write-AppLog "Policy target not found: $($p.Name) / $($p.MAC)" 'WARN'
             }
         }
+        exit 0
+    }
+    if ($VerifyLocks) {
+        Write-AppLog "AdapterLock v$($script:Version) verifying lock integrity"
+        $results = Test-LockIntegrity -Fix:$Remediate
+        $drift = @($results | Where-Object { $_.Status -eq 'DRIFT' })
+        if ($drift.Count -gt 0) {
+            if ($Remediate) {
+                Write-AppLog "Remediated $($drift.Count) adapter(s) with drift" 'OK'
+            } else {
+                Write-AppLog "$($drift.Count) adapter(s) have lock drift (use -Remediate to fix)" 'WARN'
+            }
+            exit 1
+        }
+        Write-AppLog "All locks intact ($($results.Count) adapter(s) verified)" 'OK'
         exit 0
     }
 

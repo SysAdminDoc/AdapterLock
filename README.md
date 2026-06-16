@@ -102,9 +102,15 @@ Changes take effect immediately — no reboot, no service restart.
 
 # Restore the latest saved ACL backup for an adapter
 .\AdapterLock.ps1 -RestoreBackup -Guid "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" -Silent
+
+# Verify all locks are intact (exits 1 if drift detected)
+.\AdapterLock.ps1 -VerifyLocks -Silent
+
+# Verify and auto-remediate any ACL drift
+.\AdapterLock.ps1 -VerifyLocks -Remediate -Silent
 ```
 
-Exit codes: `0` = success, `1` = adapter not found / operation failed, `2` = bad arguments.
+Exit codes: `0` = success, `1` = adapter not found / operation failed / drift detected, `2` = bad arguments.
 
 ## Verifying the lock
 

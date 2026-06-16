@@ -166,6 +166,33 @@ Describe 'AdapterLock core functions' {
         $result.Count | Should Be 0
     }
 
+    It 'detects drift when adapter is partially locked' {
+        Import-AdapterLockFunction -Name 'Test-AdapterLockedDetailed', 'Test-AdapterLocked', 'Test-LockIntegrity', 'Get-InterfaceKeyPath', 'Import-LockPolicy', 'Write-EvtLog'
+        Mock Get-NetAdapter {
+            @([pscustomobject]@{
+                Name = 'Ethernet'
+                InterfaceGuid = '{11111111-1111-1111-1111-111111111111}'
+            })
+        }
+        Mock Test-Path {
+            if ($LiteralPath -and $LiteralPath -like '*policy.json') { return $false }
+            return $true
+        }
+        $script:aclCallCount = 0
+        Mock Get-Acl {
+            $script:aclCallCount++
+            if ($script:aclCallCount -eq 1) {
+                New-FakeAcl
+            } else {
+                New-FakeAcl -AccessControlType 'Allow'
+            }
+        }
+
+        $results = @(Test-LockIntegrity)
+        $results.Count | Should Be 1
+        $results[0].Status | Should Be 'DRIFT'
+    }
+
     It 'covers all three IP stack keys per adapter' {
         Import-AdapterLockFunction -Name 'Get-InterfaceKeyPath'
         $guid = '{11111111-1111-1111-1111-111111111111}'
