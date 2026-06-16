@@ -748,15 +748,25 @@ function Invoke-RemoteLockQuery {
 }
 
 function Get-AdapterRow {
+    param([switch]$ShowHidden)
     $rows = New-Object System.Collections.ObjectModel.ObservableCollection[object]
     try {
-        $adapters = Get-NetAdapter -IncludeHidden:$false -ErrorAction Stop | Sort-Object ifIndex
+        $adapters = Get-NetAdapter -IncludeHidden:$ShowHidden -ErrorAction Stop | Sort-Object ifIndex
     } catch {
         Write-AppLog "Get-NetAdapter failed: $($_.Exception.Message)" 'ERROR'
         return $rows
     }
+
+    $connectedGuids = @{}
+    if ($ShowHidden) {
+        Get-NetAdapter -IncludeHidden:$false -ErrorAction SilentlyContinue | ForEach-Object {
+            $connectedGuids[$_.InterfaceGuid] = $true
+        }
+    }
+
     foreach ($a in $adapters) {
         $guid = $a.InterfaceGuid
+        $isHidden = $ShowHidden -and -not $connectedGuids.ContainsKey($guid)
         $ipv4 = (Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
                  Where-Object { $_.IPAddress -notlike '169.254.*' } |
                  Select-Object -First 1 -ExpandProperty IPAddress) -as [string]
@@ -774,22 +784,25 @@ function Get-AdapterRow {
                       elseif ($detail.V6Locked)                           { 'v6 only (!)' }
                       else                                                { '-' }
 
+        $displayName = if ($isHidden) { "$($a.Name) (hidden)" } else { $a.Name }
+        $displayStatus = if ($isHidden) { 'Hidden' } else { [string]$a.Status }
         $rows.Add([pscustomobject]@{
             NicType    = Get-NicType -A $a
             NicTypeGlyph = Get-NicTypeGlyph -Type (Get-NicType -A $a)
-            Name       = $a.Name
+            Name       = $displayName
             Description = $a.InterfaceDescription
             MAC        = $a.MacAddress
             IPv4       = $ipv4
             ConfigMode = $dhcpState.Mode
             ConfigDetail = $dhcpState.Detail
             IsDhcp     = $dhcpState.IsDhcp
-            Status     = $a.Status
+            Status     = $displayStatus
             LastChanged = if ($lastChanged) { $lastChanged.ToString('yyyy-MM-dd HH:mm') } else { '-' }
             LockBadge  = $badge
             LockDetail = $lockDetail
             Guid       = $guid
             IsLocked   = ($badge -ne 'Unlocked')
+            IsHidden   = $isHidden
         }) | Out-Null
     }
     return $rows
@@ -1113,7 +1126,8 @@ if ($script:IsCli) {
             <Button x:Name="SavePolicyBtn" Content="Save Policy"    Margin="0,0,8,0"/>
             <Button x:Name="LoadPolicyBtn" Content="Load Policy"    Margin="0,0,8,0"/>
             <Button x:Name="OpenNcpaBtn" Content="Open ncpa.cpl"   Margin="0,0,8,0"/>
-            <Button x:Name="OpenLogBtn"  Content="Open Log Folder"/>
+            <Button x:Name="OpenLogBtn"  Content="Open Log Folder"    Margin="0,0,8,0"/>
+            <Button x:Name="ToggleHiddenBtn" Content="Show Hidden"/>
         </StackPanel>
 
         <!-- Log -->
@@ -1155,7 +1169,9 @@ $RefreshBtn  = $window.FindName('RefreshBtn')
 $SavePolicyBtn = $window.FindName('SavePolicyBtn')
 $LoadPolicyBtn = $window.FindName('LoadPolicyBtn')
 $OpenNcpaBtn = $window.FindName('OpenNcpaBtn')
-$OpenLogBtn  = $window.FindName('OpenLogBtn')
+$OpenLogBtn       = $window.FindName('OpenLogBtn')
+$ToggleHiddenBtn  = $window.FindName('ToggleHiddenBtn')
+$script:ShowHidden = $false
 
 $script:VersionText.Text = " v$($script:Version)"
 
@@ -1375,7 +1391,7 @@ $ctxCopyGuid.Add_Click({
 # --- Grid helpers ---
 function Show-AdapterGrid {
     $script:StatusText.Text = 'Scanning adapters...'
-    $script:AllRows = Get-AdapterRow
+    $script:AllRows = Get-AdapterRow -ShowHidden:$script:ShowHidden
     Update-AdapterFilter
     $locked  = ($script:AllRows | Where-Object { $_.IsLocked }).Count
     $partial = ($script:AllRows | Where-Object { $_.LockBadge -eq 'PARTIAL' }).Count
@@ -1475,6 +1491,11 @@ $LoadPolicyBtn.Add_Click({
 })
 $OpenNcpaBtn.Add_Click({ try { Start-Process 'ncpa.cpl' } catch { Write-AppLog "ncpa open failed: $($_.Exception.Message)" 'ERROR' } })
 $OpenLogBtn.Add_Click({  try { Start-Process (Split-Path $script:LogPath) } catch { Write-AppLog "log folder open failed: $($_.Exception.Message)" 'ERROR' } })
+$ToggleHiddenBtn.Add_Click({
+    $script:ShowHidden = -not $script:ShowHidden
+    $ToggleHiddenBtn.Content = if ($script:ShowHidden) { 'Hide Hidden' } else { 'Show Hidden' }
+    Show-AdapterGrid
+})
 
 $window.Add_Loaded({
     Initialize-EventSource
