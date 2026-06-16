@@ -142,6 +142,30 @@ Describe 'AdapterLock core functions' {
         $adapters[0].State | Should Be 'locked'
     }
 
+    It 'rejects policy file missing Version field' {
+        Import-AdapterLockFunction -Name 'Import-LockPolicy'
+        $policyPath = Join-Path $TestDrive 'bad-no-version.json'
+        @{ Adapters = @(@{ Name = 'Ethernet' }) } | ConvertTo-Json | Set-Content $policyPath
+        $result = @(Import-LockPolicy -Path $policyPath)
+        $result.Count | Should Be 0
+    }
+
+    It 'rejects policy file with non-array Adapters' {
+        Import-AdapterLockFunction -Name 'Import-LockPolicy'
+        $policyPath = Join-Path $TestDrive 'bad-adapters-string.json'
+        @{ Version = '0.6.0'; Adapters = 'not-an-array' } | ConvertTo-Json | Set-Content $policyPath
+        $result = @(Import-LockPolicy -Path $policyPath)
+        $result.Count | Should Be 0
+    }
+
+    It 'rejects adapter entry without any identifier' {
+        Import-AdapterLockFunction -Name 'Import-LockPolicy'
+        $policyPath = Join-Path $TestDrive 'bad-no-id.json'
+        @{ Version = '0.6.0'; Adapters = @(@{ State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $policyPath
+        $result = @(Import-LockPolicy -Path $policyPath)
+        $result.Count | Should Be 0
+    }
+
     It 'classifies NIC types' {
         Import-AdapterLockFunction -Name 'Get-NicType'
 

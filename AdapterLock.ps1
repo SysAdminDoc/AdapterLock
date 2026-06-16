@@ -293,12 +293,31 @@ function Import-LockPolicy {
     }
     try {
         $policy = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -ErrorAction Stop
-        Write-AppLog "Policy loaded: $Path ($($policy.Adapters.Count) adapters)" 'OK'
-        return $policy.Adapters
     } catch {
         Write-AppLog "Policy parse failed: $($_.Exception.Message)" 'ERROR'
         return @()
     }
+
+    if (-not $policy.Version) {
+        Write-AppLog "Policy validation failed: missing 'Version' field" 'ERROR'
+        return @()
+    }
+    if ($null -eq $policy.Adapters -or $policy.Adapters -isnot [System.Array]) {
+        Write-AppLog "Policy validation failed: 'Adapters' must be an array" 'ERROR'
+        return @()
+    }
+    $valid = @()
+    for ($i = 0; $i -lt $policy.Adapters.Count; $i++) {
+        $a = $policy.Adapters[$i]
+        $hasId = [bool]$a.Name -or [bool]$a.MAC -or [bool]$a.GUID
+        if (-not $hasId) {
+            Write-AppLog "Policy validation failed: Adapters[$i] has no Name, MAC, or GUID" 'ERROR'
+            return @()
+        }
+        $valid += $a
+    }
+    Write-AppLog "Policy loaded: $Path ($($valid.Count) adapters)" 'OK'
+    return $valid
 }
 
 function Install-EnforcementTask {
