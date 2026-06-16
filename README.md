@@ -111,6 +111,12 @@ Changes take effect immediately — no reboot, no service restart.
 
 # Query lock state on remote hosts (requires PS remoting)
 .\AdapterLock.ps1 -Query -ComputerName host1,host2,host3 -Silent
+
+# Install WMI drift watcher (logs EventId 1002 on registry changes)
+.\AdapterLock.ps1 -InstallWatcher
+
+# Remove the WMI drift watcher
+.\AdapterLock.ps1 -UninstallWatcher
 ```
 
 Exit codes: `0` = success, `1` = adapter not found / operation failed / drift detected, `2` = bad arguments.

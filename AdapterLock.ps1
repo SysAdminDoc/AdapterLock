@@ -75,6 +75,12 @@
 .PARAMETER ComputerName
     One or more remote computer names to query. Used with -Query.
 
+.PARAMETER InstallWatcher
+    Install a permanent WMI event subscription that logs registry changes on Tcpip interface keys (EventId 1002).
+
+.PARAMETER UninstallWatcher
+    Remove the AdapterLock WMI drift watcher.
+
 .EXAMPLE
     .\AdapterLock.ps1
     Launch the WPF GUI for interactive lock/unlock.
@@ -120,11 +126,13 @@ param(
     [switch]$VerifyLocks,
     [switch]$Remediate,
     [switch]$Query,
-    [string[]]$ComputerName
+    [string[]]$ComputerName,
+    [switch]$InstallWatcher,
+    [switch]$UninstallWatcher
 )
 
 
-$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent
+$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent -or $InstallWatcher.IsPresent -or $UninstallWatcher.IsPresent
 $script:IsDryRun = $DryRun.IsPresent
 
 
@@ -385,6 +393,70 @@ function Uninstall-EnforcementTask {
     }
 }
 
+
+function Install-WmiWatcher {
+    $wmiNs = 'root\subscription'
+    $filterName = 'AdapterLock_RegistryFilter'
+    $consumerName = 'AdapterLock_LogConsumer'
+    $bindingQuery = "SELECT * FROM __FilterToConsumerBinding WHERE Filter = ""__EventFilter.Name='$filterName'"""
+
+    try { Get-WmiObject -Namespace $wmiNs -Class __FilterToConsumerBinding -Filter "Filter = ""__EventFilter.Name='$filterName'""" -ErrorAction SilentlyContinue | Remove-WmiObject -ErrorAction SilentlyContinue } catch {}
+    try { Get-WmiObject -Namespace $wmiNs -Class __EventFilter -Filter "Name='$filterName'" -ErrorAction SilentlyContinue | Remove-WmiObject -ErrorAction SilentlyContinue } catch {}
+    try { Get-WmiObject -Namespace $wmiNs -Class NTEventLogEventConsumer -Filter "Name='$consumerName'" -ErrorAction SilentlyContinue | Remove-WmiObject -ErrorAction SilentlyContinue } catch {}
+
+    $wql = "SELECT * FROM RegistryValueChangeEvent WHERE Hive='HKEY_LOCAL_MACHINE' AND KeyPath LIKE 'SYSTEM\\\\CurrentControlSet\\\\Services\\\\Tcpip\\\\Parameters\\\\Interfaces\\\\%'"
+    $filter = Set-WmiInstance -Namespace $wmiNs -Class __EventFilter -Arguments @{
+        Name = $filterName
+        EventNamespace = 'root\default'
+        QueryLanguage = 'WQL'
+        Query = $wql
+    } -ErrorAction Stop
+
+    $consumer = Set-WmiInstance -Namespace $wmiNs -Class NTEventLogEventConsumer -Arguments @{
+        Name = $consumerName
+        SourceName = 'AdapterLock'
+        EventID = [uint32]1002
+        EventType = [uint32]2
+        Category = [uint16]0
+        NumberOfInsertionStrings = [uint32]1
+        InsertionStringTemplates = @('AdapterLock drift: registry change detected on %KeyPath%')
+    } -ErrorAction Stop
+
+    Set-WmiInstance -Namespace $wmiNs -Class __FilterToConsumerBinding -Arguments @{
+        Filter = $filter
+        Consumer = $consumer
+    } -ErrorAction Stop | Out-Null
+
+    Write-AppLog "WMI watcher installed: $filterName -> $consumerName (EventId 1002)" 'OK'
+    Write-EvtLog "WMI drift watcher installed on $env:COMPUTERNAME"
+}
+
+function Uninstall-WmiWatcher {
+    $wmiNs = 'root\subscription'
+    $filterName = 'AdapterLock_RegistryFilter'
+    $consumerName = 'AdapterLock_LogConsumer'
+    $removed = 0
+
+    try {
+        Get-WmiObject -Namespace $wmiNs -Class __FilterToConsumerBinding -Filter "Filter = ""__EventFilter.Name='$filterName'""" -ErrorAction Stop | Remove-WmiObject -ErrorAction Stop
+        $removed++
+    } catch {}
+    try {
+        Get-WmiObject -Namespace $wmiNs -Class __EventFilter -Filter "Name='$filterName'" -ErrorAction Stop | Remove-WmiObject -ErrorAction Stop
+        $removed++
+    } catch {}
+    try {
+        Get-WmiObject -Namespace $wmiNs -Class NTEventLogEventConsumer -Filter "Name='$consumerName'" -ErrorAction Stop | Remove-WmiObject -ErrorAction Stop
+        $removed++
+    } catch {}
+
+    if ($removed -gt 0) {
+        Write-AppLog "WMI watcher removed ($removed component(s))" 'OK'
+        Write-EvtLog "WMI drift watcher removed from $env:COMPUTERNAME"
+    } else {
+        Write-AppLog 'No WMI watcher components found' 'INFO'
+    }
+}
 
 function Get-InterfaceKeyPath {
     param([string]$Guid)
@@ -840,6 +912,21 @@ if ($script:IsCli) {
     if ($UninstallTask) {
         Write-AppLog "AdapterLock v$($script:Version) uninstalling enforcement task"
         Uninstall-EnforcementTask
+        exit 0
+    }
+    if ($InstallWatcher) {
+        Write-AppLog "AdapterLock v$($script:Version) installing WMI drift watcher"
+        try {
+            Install-WmiWatcher
+            exit 0
+        } catch {
+            Write-AppLog "WMI watcher install failed: $($_.Exception.Message)" 'ERROR'
+            exit 1
+        }
+    }
+    if ($UninstallWatcher) {
+        Write-AppLog "AdapterLock v$($script:Version) removing WMI drift watcher"
+        Uninstall-WmiWatcher
         exit 0
     }
     if ($RestoreBackup) {
