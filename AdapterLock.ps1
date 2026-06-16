@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-# AdapterLock v0.5.0
+# AdapterLock v0.6.0
 # Per-adapter IP lockdown via registry ACL on Tcpip\Parameters\Interfaces\{GUID}
 # Blocks ncpa.cpl / netsh / Set-NetIPAddress from modifying the selected NIC,
 # even for local administrators. Unlock restores normal ACLs.
@@ -87,7 +87,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.5.0'
+$script:Version   = '0.6.0'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -100,7 +100,7 @@ function Write-AppLog {
     Add-Content -LiteralPath $script:LogPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
     if ($script:IsCli) {
         if ($Level -eq 'ERROR' -or $Level -eq 'WARN') { Write-Warning $Message }
-        else { Write-Host $line }
+        else { Write-Information $line -InformationAction Continue }
     }
     if ($script:LogBox) {
         $script:LogBox.Dispatcher.Invoke([action]{
@@ -201,7 +201,7 @@ function Export-LockPolicy {
         Adapters = @()
     }
     try {
-        Get-AdapterRows | ForEach-Object {
+        Get-AdapterRow | ForEach-Object {
             if ($_.IsLocked) {
                 $policy.Adapters += @{
                     Name = $_.Name
@@ -272,7 +272,7 @@ function Uninstall-EnforcementTask {
 }
 
 
-function Get-InterfaceKeyPaths {
+function Get-InterfaceKeyPath {
     param([string]$Guid)
     return @(
         "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$Guid"
@@ -326,7 +326,7 @@ function Save-AdapterSddl {
     param([string]$Guid, [string]$Name)
     $ts       = Get-Date -Format 'yyyyMMdd-HHmmss'
     $safeGuid = $Guid -replace '[{}]', ''
-    foreach ($p in (Get-InterfaceKeyPaths -Guid $Guid)) {
+    foreach ($p in (Get-InterfaceKeyPath -Guid $Guid)) {
         if (-not (Test-Path -LiteralPath $p)) { continue }
         try {
             $sddl    = (Get-Acl -LiteralPath $p -ErrorAction Stop).Sddl
@@ -346,7 +346,7 @@ function Restore-AdapterSddl {
     $displayName = if ($Name) { $Name } else { $Guid }
     $restored = 0
 
-    foreach ($p in (Get-InterfaceKeyPaths -Guid $Guid)) {
+    foreach ($p in (Get-InterfaceKeyPath -Guid $Guid)) {
         if (-not (Test-Path -LiteralPath $p)) {
             Write-AppLog "Restore skipped missing key: $p" 'WARN'
             continue
@@ -423,7 +423,7 @@ function Test-AdapterLocked {
 
 function Lock-Adapter {
     param([string]$Guid, [string]$Name, [switch]$Preview)
-    $paths = Get-InterfaceKeyPaths -Guid $Guid
+    $paths = Get-InterfaceKeyPath -Guid $Guid
     $dhcpState = Get-AdapterDhcpState -Guid $Guid
     if ($dhcpState.IsDhcp) {
         Write-AppLog "DHCP warning: $Name ($Guid) has EnableDHCP=1; locking can block DHCP lease registry updates." 'WARN'
@@ -468,7 +468,7 @@ function Lock-Adapter {
 
 function Unlock-Adapter {
     param([string]$Guid, [string]$Name, [switch]$Preview)
-    $paths = Get-InterfaceKeyPaths -Guid $Guid
+    $paths = Get-InterfaceKeyPath -Guid $Guid
 
     if ($Preview -or $script:IsDryRun) {
         Write-AppLog "DRY-RUN Unlock $Name ($Guid) - Deny ACEs would be removed from:" 'INFO'
@@ -505,7 +505,7 @@ function Unlock-Adapter {
     return $false
 }
 
-function Get-AdapterRows {
+function Get-AdapterRow {
     $rows = New-Object System.Collections.ObjectModel.ObservableCollection[object]
     try {
         $adapters = Get-NetAdapter -IncludeHidden:$false -ErrorAction Stop | Sort-Object ifIndex
@@ -780,7 +780,7 @@ if ($script:IsCli) {
         <!-- Header -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
             <TextBlock Text="AdapterLock" FontSize="22" FontWeight="Bold" Foreground="{StaticResource Mauve}"/>
-            <TextBlock x:Name="VersionText" Text=" v0.5.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
+            <TextBlock x:Name="VersionText" Text=" v0.6.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
         </StackPanel>
         <TextBlock Grid.Row="1" Margin="0,0,0,12"
                    Text="Per-adapter IP lockdown via registry ACL. Locks Tcpip\Interfaces\{GUID} so ncpa.cpl, netsh, and Set-NetIPAddress all fail - even for local admins. Right-click a row for more options."
@@ -882,17 +882,17 @@ $OpenLogBtn  = $window.FindName('OpenLogBtn')
 $script:VersionText.Text = " v$($script:Version)"
 
 # --- Context menu (built in code; avoids XAML x:Name scoping issues) ---
-function New-CMBrush {
+function Get-CMBrush {
     param([string]$Hex)
     $c = [System.Windows.Media.ColorConverter]::ConvertFromString($Hex)
     return New-Object System.Windows.Media.SolidColorBrush $c
 }
-function New-CMItem {
+function Get-CMMenuItem {
     param([string]$Header)
     $mi = New-Object System.Windows.Controls.MenuItem
     $mi.Header     = $Header
-    $mi.Foreground = New-CMBrush '#FFCDD6F4'
-    $mi.Background = New-CMBrush '#FF181825'
+    $mi.Foreground = Get-CMBrush '#FFCDD6F4'
+    $mi.Background = Get-CMBrush '#FF181825'
     return $mi
 }
 
@@ -914,8 +914,8 @@ function Show-AdapterActionDialog {
     $dialog.ResizeMode = 'NoResize'
     $dialog.WindowStartupLocation = 'CenterOwner'
     $dialog.Owner = $window
-    $dialog.Background = New-CMBrush '#FF1E1E2E'
-    $dialog.Foreground = New-CMBrush '#FFCDD6F4'
+    $dialog.Background = Get-CMBrush '#FF1E1E2E'
+    $dialog.Foreground = Get-CMBrush '#FFCDD6F4'
     $dialog.FontFamily = 'Segoe UI'
     $dialog.FontSize = 13
     $dialog.Tag = $false
@@ -931,7 +931,7 @@ function Show-AdapterActionDialog {
 
     $remember = New-Object System.Windows.Controls.CheckBox
     $remember.Content = "Don't ask again this session"
-    $remember.Foreground = New-CMBrush '#FFA6ADC8'
+    $remember.Foreground = Get-CMBrush '#FFA6ADC8'
     $remember.Margin = [System.Windows.Thickness]::new(0,0,0,18)
     $panel.Children.Add($remember) | Out-Null
 
@@ -1005,17 +1005,17 @@ function Confirm-AdapterOperation {
 }
 
 $ctxMenu = New-Object System.Windows.Controls.ContextMenu
-$ctxMenu.Background      = New-CMBrush '#FF181825'
-$ctxMenu.Foreground      = New-CMBrush '#FFCDD6F4'
-$ctxMenu.BorderBrush     = New-CMBrush '#FF45475A'
+$ctxMenu.Background      = Get-CMBrush '#FF181825'
+$ctxMenu.Foreground      = Get-CMBrush '#FFCDD6F4'
+$ctxMenu.BorderBrush     = Get-CMBrush '#FF45475A'
 $ctxMenu.BorderThickness = [System.Windows.Thickness]::new(1)
 
-$ctxLock     = New-CMItem 'Lock'
-$ctxUnlock   = New-CMItem 'Unlock'
-$ctxRestore  = New-CMItem 'Restore from Backup'
-$ctxNcpa     = New-CMItem 'Open in ncpa.cpl'
-$ctxCopyMac  = New-CMItem 'Copy MAC'
-$ctxCopyGuid = New-CMItem 'Copy GUID'
+$ctxLock     = Get-CMMenuItem 'Lock'
+$ctxUnlock   = Get-CMMenuItem 'Unlock'
+$ctxRestore  = Get-CMMenuItem 'Restore from Backup'
+$ctxNcpa     = Get-CMMenuItem 'Open in ncpa.cpl'
+$ctxCopyMac  = Get-CMMenuItem 'Copy MAC'
+$ctxCopyGuid = Get-CMMenuItem 'Copy GUID'
 
 [void]$ctxMenu.Items.Add($ctxLock)
 [void]$ctxMenu.Items.Add($ctxUnlock)
@@ -1032,7 +1032,8 @@ $script:AdapterGrid.ContextMenu = $ctxMenu
 $script:RightClickedRow = $null
 
 $script:AdapterGrid.Add_PreviewMouseRightButtonDown({
-    param($sender, $e)
+    param($grid, $e)
+    $null = $grid
     $script:RightClickedRow = $null
     try {
         $dep = $e.OriginalSource -as [System.Windows.DependencyObject]
@@ -1049,7 +1050,8 @@ $script:AdapterGrid.Add_PreviewMouseRightButtonDown({
 })
 
 $ctxMenu.Add_Opening({
-    param($s, $e)
+    param($menu, $e)
+    $null = $menu
     if (-not $script:RightClickedRow) { $e.Handled = $true }
 })
 
@@ -1057,21 +1059,21 @@ $ctxLock.Add_Click({
     $row = $script:RightClickedRow
     if ($row -and (Confirm-AdapterOperation -Action 'Lock' -Row $row)) {
         [void](Lock-Adapter -Guid $row.Guid -Name $row.Name)
-        Refresh-Grid
+        Show-AdapterGrid
     }
 })
 $ctxUnlock.Add_Click({
     $row = $script:RightClickedRow
     if ($row -and (Confirm-AdapterOperation -Action 'Unlock' -Row $row)) {
         [void](Unlock-Adapter -Guid $row.Guid -Name $row.Name)
-        Refresh-Grid
+        Show-AdapterGrid
     }
 })
 $ctxRestore.Add_Click({
     $row = $script:RightClickedRow
     if ($row -and (Confirm-AdapterOperation -Action 'Restore' -Row $row)) {
         [void](Restore-AdapterSddl -Guid $row.Guid -Name $row.Name)
-        Refresh-Grid
+        Show-AdapterGrid
     }
 })
 $ctxNcpa.Add_Click({
@@ -1093,9 +1095,9 @@ $ctxCopyGuid.Add_Click({
 })
 
 # --- Grid helpers ---
-function Refresh-Grid {
+function Show-AdapterGrid {
     $script:StatusText.Text = 'Scanning adapters...'
-    $rows = Get-AdapterRows
+    $rows = Get-AdapterRow
     $script:AdapterGrid.ItemsSource = $rows
     $locked  = ($rows | Where-Object { $_.IsLocked }).Count
     $partial = ($rows | Where-Object { $_.LockBadge -eq 'PARTIAL' }).Count
@@ -1105,7 +1107,7 @@ function Refresh-Grid {
     Write-AppLog "Refresh: $($rows.Count) adapters, $locked locked, $partial partial"
 }
 
-function Apply-ToSelected {
+function Invoke-SelectedAdapterAction {
     param([ValidateSet('Lock','Unlock')][string]$Action)
     $sel = @($script:AdapterGrid.SelectedItems)
     if ($sel.Count -eq 0) {
@@ -1123,12 +1125,12 @@ function Apply-ToSelected {
             [void](Unlock-Adapter -Guid $row.Guid -Name $row.Name)
         }
     }
-    Refresh-Grid
+    Show-AdapterGrid
 }
 
-$LockBtn.Add_Click({     Apply-ToSelected -Action 'Lock' })
-$UnlockBtn.Add_Click({   Apply-ToSelected -Action 'Unlock' })
-$RefreshBtn.Add_Click({  Refresh-Grid })
+$LockBtn.Add_Click({     Invoke-SelectedAdapterAction -Action 'Lock' })
+$UnlockBtn.Add_Click({   Invoke-SelectedAdapterAction -Action 'Unlock' })
+$RefreshBtn.Add_Click({  Show-AdapterGrid })
 $SavePolicyBtn.Add_Click({
     $dlg = New-Object System.Windows.Forms.SaveFileDialog
     $dlg.Filter = 'JSON files (*.json)|*.json'
@@ -1150,7 +1152,7 @@ $LoadPolicyBtn.Add_Click({
                 $a = Find-AdapterByIdentifier -ByName $p.Name -ByMac $p.MAC -ByGuid $p.GUID
                 if ($a) { [void](Lock-Adapter -Guid $a.InterfaceGuid -Name $a.Name) }
             }
-            Refresh-Grid
+            Show-AdapterGrid
             $script:StatusText.Text = "Policy loaded: $($policy.Count) adapter(s)"
         } else {
             $script:StatusText.Text = 'Failed to load policy.'
@@ -1163,7 +1165,7 @@ $OpenLogBtn.Add_Click({  try { Start-Process (Split-Path $script:LogPath) } catc
 $window.Add_Loaded({
     Initialize-EventSource
     Write-AppLog "AdapterLock v$($script:Version) started"
-    Refresh-Grid
+    Show-AdapterGrid
 })
 
 [void]$window.ShowDialog()

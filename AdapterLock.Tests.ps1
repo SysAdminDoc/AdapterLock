@@ -65,7 +65,7 @@ Describe 'AdapterLock core functions' {
     }
 
     It 'logs lock dry-run paths without writing ACLs' {
-        Import-AdapterLockFunction -Name 'Get-InterfaceKeyPaths', 'Get-AdapterDhcpState', 'Lock-Adapter'
+        Import-AdapterLockFunction -Name 'Get-InterfaceKeyPath', 'Get-AdapterDhcpState', 'Lock-Adapter'
         Mock Test-Path { $true }
         Mock Get-ItemPropertyValue { 0 }
         Mock Get-Acl { throw 'Get-Acl should not be called during dry-run' }
@@ -78,7 +78,7 @@ Describe 'AdapterLock core functions' {
     }
 
     It 'logs unlock dry-run paths without writing ACLs' {
-        Import-AdapterLockFunction -Name 'Get-InterfaceKeyPaths', 'Unlock-Adapter'
+        Import-AdapterLockFunction -Name 'Get-InterfaceKeyPath', 'Unlock-Adapter'
         Mock Test-Path { $true }
         Mock Get-Acl { throw 'Get-Acl should not be called during dry-run' }
         Mock Set-Acl { throw 'Set-Acl should not be called during dry-run' }
@@ -114,7 +114,7 @@ Describe 'AdapterLock core functions' {
     It 'round-trips exported lock policy JSON' {
         Import-AdapterLockFunction -Name 'Export-LockPolicy', 'Import-LockPolicy'
         $script:Version = 'test'
-        function Get-AdapterRows {
+        function Get-AdapterRow {
             @(
                 [pscustomobject]@{
                     IsLocked = $true

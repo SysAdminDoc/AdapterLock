@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.5.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.6.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -129,8 +129,9 @@ Use `-RestoreBackup -Guid "{...}" -Silent` or the row context menu to restore th
 
 ```powershell
 Invoke-Pester -Script .\AdapterLock.Tests.ps1
+Invoke-ScriptAnalyzer -Path .\AdapterLock.ps1 -Severity Error,Warning
 ```
 
 ## Version
 
-v0.5.0
+v0.6.0
