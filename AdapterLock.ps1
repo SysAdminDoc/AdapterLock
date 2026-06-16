@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-# AdapterLock v0.3.0
+# AdapterLock v0.4.0
 # Per-adapter IP lockdown via registry ACL on Tcpip\Parameters\Interfaces\{GUID}
 # Blocks ncpa.cpl / netsh / Set-NetIPAddress from modifying the selected NIC,
 # even for local administrators. Unlock restores normal ACLs.
@@ -8,6 +8,7 @@
 # CLI mode  : .\AdapterLock.ps1 -Lock   [-Adapter <name>|-Mac <mac>|-Guid <guid>] [-Silent] [-DryRun]
 #             .\AdapterLock.ps1 -Unlock [-Adapter <name>|-Mac <mac>|-Guid <guid>] [-Silent] [-DryRun]
 #             .\AdapterLock.ps1 -LoadPolicy <file> [-Silent]
+#             .\AdapterLock.ps1 -RestoreBackup -Guid <guid> [-Silent]
 #             .\AdapterLock.ps1 -InstallTask [-PolicyFile <file>]
 #             .\AdapterLock.ps1 -UninstallTask
 
@@ -21,13 +22,14 @@ param(
     [switch]$Silent,
     [switch]$DryRun,
     [string]$LoadPolicy,
+    [switch]$RestoreBackup,
     [switch]$InstallTask,
     [switch]$UninstallTask,
     [string]$PolicyFile
 )
 
 
-$script:IsCli    = $Silent.IsPresent -or (($Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $InstallTask.IsPresent -or $UninstallTask.IsPresent) -and ($Adapter -or $Mac -or $Guid -or $LoadPolicy -or $InstallTask.IsPresent -or $UninstallTask.IsPresent))
+$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent
 $script:IsDryRun = $DryRun.IsPresent
 
 
@@ -56,7 +58,11 @@ if (-not (Test-Admin)) {
         }
     }
     $psi.Arguments = $fwd -join ' '
-    try { [void][System.Diagnostics.Process]::Start($psi) } catch { }
+    try {
+        [void][System.Diagnostics.Process]::Start($psi)
+    } catch {
+        throw "Elevation launch failed: $($_.Exception.Message)"
+    }
     exit
 }
 
@@ -81,7 +87,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.3.0'
+$script:Version   = '0.4.0'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -109,7 +115,9 @@ function Initialize-EventSource {
         if (-not [System.Diagnostics.EventLog]::SourceExists('AdapterLock')) {
             [System.Diagnostics.EventLog]::CreateEventSource('AdapterLock', 'Application')
         }
-    } catch { }
+    } catch {
+        Write-AppLog "Event source initialization failed: $($_.Exception.Message)" 'WARN'
+    }
 }
 
 function Write-EvtLog {
@@ -117,7 +125,9 @@ function Write-EvtLog {
     try {
         Write-EventLog -LogName Application -Source AdapterLock `
             -EventId 1001 -EntryType $EntryType -Message $Message -ErrorAction SilentlyContinue
-    } catch { }
+    } catch {
+        Write-AppLog "Event log write failed: $($_.Exception.Message)" 'WARN'
+    }
 }
 
 function Get-NicType {
@@ -140,7 +150,8 @@ function Get-NicTypeGlyph {
         'Tunl'  = [char]0xE784   # VPN
         'Loop'  = [char]0xE81D   # LoopArrow
     }
-    return $glyphs[$Type] ?? $Type
+    if ($glyphs.ContainsKey($Type)) { return $glyphs[$Type] }
+    return $Type
 }
 
 function Get-RegistryLastWrite {
@@ -175,7 +186,8 @@ public static System.DateTime GetKeyLastWrite(string path) {
     try {
         $subPath = $Path -replace '^HKLM:\\', ''
         $dt = [AdapterLock.RegistryUtil]::GetKeyLastWrite($subPath)
-        return $dt -ne [DateTime]::MinValue ? $dt : $null
+        if ($dt -ne [DateTime]::MinValue) { return $dt }
+        return $null
     } catch {
         return $null
     }
@@ -199,7 +211,9 @@ function Export-LockPolicy {
                 }
             }
         }
-    } catch { }
+    } catch {
+        Write-AppLog "Policy export scan failed: $($_.Exception.Message)" 'WARN'
+    }
     $policy | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Path -Encoding UTF8
     Write-AppLog "Policy exported: $Path ($($policy.Adapters.Count) adapters)" 'OK'
 }
@@ -238,7 +252,9 @@ function Install-EnforcementTask {
     $principal = New-ScheduledTaskPrincipal -UserId SYSTEM -RunLevel Highest
     try {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-    } catch { }
+    } catch {
+        Write-AppLog "Existing task cleanup failed: $($_.Exception.Message)" 'WARN'
+    }
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
     Write-AppLog "Enforcement task installed: $taskName (runs at startup)" 'OK'
     Write-EvtLog "Enforcement task installed on $env:COMPUTERNAME"
@@ -265,6 +281,47 @@ function Get-InterfaceKeyPaths {
     )
 }
 
+function Get-AdapterDhcpState {
+    param([string]$Guid)
+    $path = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$Guid"
+    if (-not (Test-Path -LiteralPath $path)) {
+        return [pscustomobject]@{
+            Mode = 'Unknown'
+            IsDhcp = $false
+            Detail = 'IPv4 interface registry key not found'
+        }
+    }
+    try {
+        $value = Get-ItemPropertyValue -LiteralPath $path -Name EnableDHCP -ErrorAction Stop
+        if ([int]$value -eq 1) {
+            return [pscustomobject]@{
+                Mode = 'DHCP'
+                IsDhcp = $true
+                Detail = 'EnableDHCP=1'
+            }
+        }
+        return [pscustomobject]@{
+            Mode = 'Static'
+            IsDhcp = $false
+            Detail = 'EnableDHCP=0'
+        }
+    } catch {
+        return [pscustomobject]@{
+            Mode = 'Unknown'
+            IsDhcp = $false
+            Detail = "EnableDHCP unreadable: $($_.Exception.Message)"
+        }
+    }
+}
+
+function Get-BackupKeyTag {
+    param([string]$Path)
+    $keyTag = ($Path -split '\\')[-1]
+    if ($Path -like '*\Tcpip6\Parameters\Interfaces\*') { return "Tcpip6.$keyTag" }
+    if ($Path -like '*\NetBT\Parameters\Interfaces\*') { return "NetBT.$keyTag" }
+    return "Tcpip.$keyTag"
+}
+
 function Save-AdapterSddl {
     param([string]$Guid, [string]$Name)
     $ts       = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -273,7 +330,7 @@ function Save-AdapterSddl {
         if (-not (Test-Path -LiteralPath $p)) { continue }
         try {
             $sddl    = (Get-Acl -LiteralPath $p -ErrorAction Stop).Sddl
-            $keyTag  = ($p -split '\\')[-1]
+            $keyTag  = Get-BackupKeyTag -Path $p
             $outFile = Join-Path $script:BackupDir "$safeGuid.$keyTag.$ts.sddl"
             Set-Content -LiteralPath $outFile -Value $sddl -Encoding UTF8 -ErrorAction Stop
         } catch {
@@ -281,6 +338,56 @@ function Save-AdapterSddl {
         }
     }
     Write-AppLog "SDDL snapshot saved: $Name ($Guid)" 'INFO'
+}
+
+function Restore-AdapterSddl {
+    param([string]$Guid, [string]$Name = '')
+    $safeGuid = $Guid -replace '[{}]', ''
+    $displayName = if ($Name) { $Name } else { $Guid }
+    $restored = 0
+
+    foreach ($p in (Get-InterfaceKeyPaths -Guid $Guid)) {
+        if (-not (Test-Path -LiteralPath $p)) {
+            Write-AppLog "Restore skipped missing key: $p" 'WARN'
+            continue
+        }
+
+        $keyTag = Get-BackupKeyTag -Path $p
+        $legacyKeyTag = ($p -split '\\')[-1]
+        $backup = Get-ChildItem -LiteralPath $script:BackupDir -Filter "$safeGuid.$keyTag.*.sddl" -File -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending |
+                  Select-Object -First 1
+
+        if (-not $backup) {
+            $backup = Get-ChildItem -LiteralPath $script:BackupDir -Filter "$safeGuid.$legacyKeyTag.*.sddl" -File -ErrorAction SilentlyContinue |
+                      Sort-Object LastWriteTime -Descending |
+                      Select-Object -First 1
+        }
+
+        if (-not $backup) {
+            Write-AppLog "No SDDL backup found for $p" 'WARN'
+            continue
+        }
+
+        try {
+            $sddl = (Get-Content -LiteralPath $backup.FullName -Raw -ErrorAction Stop).Trim()
+            $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
+            $acl.SetSecurityDescriptorSddlForm($sddl)
+            Set-Acl -LiteralPath $p -AclObject $acl -ErrorAction Stop
+            $restored++
+            Write-AppLog "Restored SDDL for $p from $($backup.Name)" 'OK'
+        } catch {
+            Write-AppLog "SDDL restore failed for $p : $($_.Exception.Message)" 'ERROR'
+        }
+    }
+
+    if ($restored -gt 0) {
+        Write-AppLog "RESTORED $displayName ($Guid) - $restored key(s) restored from backup" 'OK'
+        Write-EvtLog "RESTORED adapter ACL backup: $displayName ($Guid) on $env:COMPUTERNAME by $env:USERNAME"
+        return $true
+    }
+    Write-AppLog "No SDDL backups restored for $displayName ($Guid)" 'ERROR'
+    return $false
 }
 
 function Test-AdapterLockedDetailed {
@@ -317,6 +424,10 @@ function Test-AdapterLocked {
 function Lock-Adapter {
     param([string]$Guid, [string]$Name, [switch]$Preview)
     $paths = Get-InterfaceKeyPaths -Guid $Guid
+    $dhcpState = Get-AdapterDhcpState -Guid $Guid
+    if ($dhcpState.IsDhcp) {
+        Write-AppLog "DHCP warning: $Name ($Guid) has EnableDHCP=1; locking can block DHCP lease registry updates." 'WARN'
+    }
 
     if ($Preview -or $script:IsDryRun) {
         Write-AppLog "DRY-RUN Lock $Name ($Guid) - Deny ACE would be applied to:" 'INFO'
@@ -410,6 +521,7 @@ function Get-AdapterRows {
         if (-not $ipv4) { $ipv4 = '-' }
 
         $lastChanged = Get-RegistryLastWrite -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+        $dhcpState = Get-AdapterDhcpState -Guid $guid
         $detail = Test-AdapterLockedDetailed -Guid $guid
         $badge  = if     ($detail.V4Locked -and ($detail.V6Locked -or -not $detail.V6Exists)) { 'LOCKED'   }
                   elseif ($detail.V4Locked -or $detail.V6Locked -or $detail.NetBTLocked)       { 'PARTIAL'  }
@@ -427,6 +539,9 @@ function Get-AdapterRows {
             Description = $a.InterfaceDescription
             MAC        = $a.MacAddress
             IPv4       = $ipv4
+            ConfigMode = $dhcpState.Mode
+            ConfigDetail = $dhcpState.Detail
+            IsDhcp     = $dhcpState.IsDhcp
             Status     = $a.Status
             LastChanged = if ($lastChanged) { $lastChanged.ToString('yyyy-MM-dd HH:mm') } else { '-' }
             LockBadge  = $badge
@@ -472,6 +587,17 @@ if ($script:IsCli) {
         Uninstall-EnforcementTask
         exit 0
     }
+    if ($RestoreBackup) {
+        Write-AppLog "AdapterLock v$($script:Version) restoring latest SDDL backup"
+        if (-not $Guid) {
+            Write-AppLog 'Specify -Guid <guid> with -RestoreBackup' 'ERROR'
+            exit 2
+        }
+        $target = Find-AdapterByIdentifier -ByGuid $Guid
+        $name = if ($target) { $target.Name } else { $Guid }
+        $ok = Restore-AdapterSddl -Guid $Guid -Name $name
+        if ($ok) { exit 0 } else { exit 1 }
+    }
     if ($LoadPolicy) {
         Write-AppLog "AdapterLock v$($script:Version) loading policy: $LoadPolicy"
         $policy = Import-LockPolicy -Path $LoadPolicy
@@ -511,7 +637,7 @@ if ($script:IsCli) {
     } else {
         Unlock-Adapter -Guid $target.InterfaceGuid -Name $target.Name -Preview:$DryRun
     }
-    exit (if ($ok) { 0 } else { 1 })
+    if ($ok) { exit 0 } else { exit 1 }
 }
 #endregion
 
@@ -654,7 +780,7 @@ if ($script:IsCli) {
         <!-- Header -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
             <TextBlock Text="AdapterLock" FontSize="22" FontWeight="Bold" Foreground="{StaticResource Mauve}"/>
-            <TextBlock x:Name="VersionText" Text=" v0.3.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
+            <TextBlock x:Name="VersionText" Text=" v0.4.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
         </StackPanel>
         <TextBlock Grid.Row="1" Margin="0,0,0,12"
                    Text="Per-adapter IP lockdown via registry ACL. Locks Tcpip\Interfaces\{GUID} so ncpa.cpl, netsh, and Set-NetIPAddress all fail - even for local admins. Right-click a row for more options."
@@ -674,6 +800,7 @@ if ($script:IsCli) {
                 <DataGridTextColumn Header="Description" Binding="{Binding Description}"  Width="*"/>
                 <DataGridTextColumn Header="MAC"         Binding="{Binding MAC}"          Width="140"/>
                 <DataGridTextColumn Header="IPv4"        Binding="{Binding IPv4}"         Width="130"/>
+                <DataGridTextColumn Header="Mode"        Binding="{Binding ConfigMode}"   Width="80"/>
                 <DataGridTextColumn Header="Status"      Binding="{Binding Status}"       Width="80"/>
                 <DataGridTextColumn Header="Changed"     Binding="{Binding LastChanged}"  Width="140"/>
                 <DataGridTemplateColumn Header="Lock" Width="110">
@@ -742,6 +869,7 @@ $script:AdapterGrid = $window.FindName('AdapterGrid')
 $script:LogBox      = $window.FindName('LogBox')
 $script:StatusText  = $window.FindName('StatusText')
 $script:VersionText = $window.FindName('VersionText')
+$script:SkipActionConfirm = $false
 
 $LockBtn     = $window.FindName('LockBtn')
 $UnlockBtn   = $window.FindName('UnlockBtn')
@@ -768,6 +896,114 @@ function New-CMItem {
     return $mi
 }
 
+function Show-AdapterActionDialog {
+    param([ValidateSet('Lock','Unlock')][string]$Action, $Row)
+    if ($script:SkipActionConfirm) { return $true }
+
+    $verb = if ($Action -eq 'Lock') { 'Lock' } else { 'Unlock' }
+    $message = if ($Action -eq 'Lock') {
+        "Lock adapter $($Row.Name)?`r`n`r`nThis will deny all IP configuration changes."
+    } else {
+        "Unlock adapter $($Row.Name)?`r`n`r`nThis will remove AdapterLock deny ACEs and allow IP configuration changes."
+    }
+
+    $dialog = New-Object System.Windows.Window
+    $dialog.Title = "$verb adapter"
+    $dialog.Width = 460
+    $dialog.Height = 230
+    $dialog.ResizeMode = 'NoResize'
+    $dialog.WindowStartupLocation = 'CenterOwner'
+    $dialog.Owner = $window
+    $dialog.Background = New-CMBrush '#FF1E1E2E'
+    $dialog.Foreground = New-CMBrush '#FFCDD6F4'
+    $dialog.FontFamily = 'Segoe UI'
+    $dialog.FontSize = 13
+    $dialog.Tag = $false
+
+    $panel = New-Object System.Windows.Controls.StackPanel
+    $panel.Margin = [System.Windows.Thickness]::new(18)
+
+    $text = New-Object System.Windows.Controls.TextBlock
+    $text.Text = $message
+    $text.TextWrapping = 'Wrap'
+    $text.Margin = [System.Windows.Thickness]::new(0,0,0,14)
+    $panel.Children.Add($text) | Out-Null
+
+    $remember = New-Object System.Windows.Controls.CheckBox
+    $remember.Content = "Don't ask again this session"
+    $remember.Foreground = New-CMBrush '#FFA6ADC8'
+    $remember.Margin = [System.Windows.Thickness]::new(0,0,0,18)
+    $panel.Children.Add($remember) | Out-Null
+
+    $buttons = New-Object System.Windows.Controls.StackPanel
+    $buttons.Orientation = 'Horizontal'
+    $buttons.HorizontalAlignment = 'Right'
+
+    $confirmBtn = New-Object System.Windows.Controls.Button
+    $confirmBtn.Content = $verb
+    $confirmBtn.MinWidth = 92
+    $confirmBtn.Margin = [System.Windows.Thickness]::new(0,0,8,0)
+
+    $cancelBtn = New-Object System.Windows.Controls.Button
+    $cancelBtn.Content = 'Cancel'
+    $cancelBtn.MinWidth = 92
+
+    $confirmBtn.Add_Click({
+        $script:SkipActionConfirm = [bool]$remember.IsChecked
+        $dialog.Tag = $true
+        $dialog.Close()
+    })
+    $cancelBtn.Add_Click({
+        $dialog.Tag = $false
+        $dialog.Close()
+    })
+
+    $buttons.Children.Add($confirmBtn) | Out-Null
+    $buttons.Children.Add($cancelBtn) | Out-Null
+    $panel.Children.Add($buttons) | Out-Null
+    $dialog.Content = $panel
+
+    [void]$dialog.ShowDialog()
+    return [bool]$dialog.Tag
+}
+
+function Confirm-DhcpLock {
+    param($Row)
+    if (-not $Row.IsDhcp) { return $true }
+
+    $message = "Adapter $($Row.Name) is DHCP-configured (EnableDHCP=1). Locking it can prevent DHCP lease updates and may break connectivity.`r`n`r`nContinue?"
+    $result = [System.Windows.MessageBox]::Show(
+        $window,
+        $message,
+        'DHCP adapter warning',
+        [System.Windows.MessageBoxButton]::YesNo,
+        [System.Windows.MessageBoxImage]::Warning
+    )
+    return ($result -eq [System.Windows.MessageBoxResult]::Yes)
+}
+
+function Confirm-AdapterOperation {
+    param([ValidateSet('Lock','Unlock','Restore')][string]$Action, $Row)
+
+    if ($Action -eq 'Lock') {
+        if (-not (Confirm-DhcpLock -Row $Row)) { return $false }
+        return (Show-AdapterActionDialog -Action 'Lock' -Row $Row)
+    }
+    if ($Action -eq 'Unlock') {
+        return (Show-AdapterActionDialog -Action 'Unlock' -Row $Row)
+    }
+
+    $message = "Restore latest SDDL backup for adapter $($Row.Name)?`r`n`r`nThis will replace the current ACLs on AdapterLock registry keys."
+    $result = [System.Windows.MessageBox]::Show(
+        $window,
+        $message,
+        'Restore adapter ACL backup',
+        [System.Windows.MessageBoxButton]::YesNo,
+        [System.Windows.MessageBoxImage]::Warning
+    )
+    return ($result -eq [System.Windows.MessageBoxResult]::Yes)
+}
+
 $ctxMenu = New-Object System.Windows.Controls.ContextMenu
 $ctxMenu.Background      = New-CMBrush '#FF181825'
 $ctxMenu.Foreground      = New-CMBrush '#FFCDD6F4'
@@ -776,12 +1012,14 @@ $ctxMenu.BorderThickness = [System.Windows.Thickness]::new(1)
 
 $ctxLock     = New-CMItem 'Lock'
 $ctxUnlock   = New-CMItem 'Unlock'
+$ctxRestore  = New-CMItem 'Restore from Backup'
 $ctxNcpa     = New-CMItem 'Open in ncpa.cpl'
 $ctxCopyMac  = New-CMItem 'Copy MAC'
 $ctxCopyGuid = New-CMItem 'Copy GUID'
 
 [void]$ctxMenu.Items.Add($ctxLock)
 [void]$ctxMenu.Items.Add($ctxUnlock)
+[void]$ctxMenu.Items.Add($ctxRestore)
 [void]$ctxMenu.Items.Add((New-Object System.Windows.Controls.Separator))
 [void]$ctxMenu.Items.Add($ctxNcpa)
 [void]$ctxMenu.Items.Add((New-Object System.Windows.Controls.Separator))
@@ -805,7 +1043,9 @@ $script:AdapterGrid.Add_PreviewMouseRightButtonDown({
             $dep.IsSelected             = $true
             $script:RightClickedRow     = $dep.Item
         }
-    } catch { }
+    } catch {
+        Write-AppLog "Context menu row detection failed: $($_.Exception.Message)" 'WARN'
+    }
 })
 
 $ctxMenu.Add_Opening({
@@ -815,11 +1055,24 @@ $ctxMenu.Add_Opening({
 
 $ctxLock.Add_Click({
     $row = $script:RightClickedRow
-    if ($row) { [void](Lock-Adapter   -Guid $row.Guid -Name $row.Name); Refresh-Grid }
+    if ($row -and (Confirm-AdapterOperation -Action 'Lock' -Row $row)) {
+        [void](Lock-Adapter -Guid $row.Guid -Name $row.Name)
+        Refresh-Grid
+    }
 })
 $ctxUnlock.Add_Click({
     $row = $script:RightClickedRow
-    if ($row) { [void](Unlock-Adapter -Guid $row.Guid -Name $row.Name); Refresh-Grid }
+    if ($row -and (Confirm-AdapterOperation -Action 'Unlock' -Row $row)) {
+        [void](Unlock-Adapter -Guid $row.Guid -Name $row.Name)
+        Refresh-Grid
+    }
+})
+$ctxRestore.Add_Click({
+    $row = $script:RightClickedRow
+    if ($row -and (Confirm-AdapterOperation -Action 'Restore' -Row $row)) {
+        [void](Restore-AdapterSddl -Guid $row.Guid -Name $row.Name)
+        Refresh-Grid
+    }
 })
 $ctxNcpa.Add_Click({
     try { Start-Process 'ncpa.cpl' } catch { Write-AppLog "ncpa open failed: $($_.Exception.Message)" 'ERROR' }
@@ -860,6 +1113,10 @@ function Apply-ToSelected {
         return
     }
     foreach ($row in $sel) {
+        if (-not (Confirm-AdapterOperation -Action $Action -Row $row)) {
+            Write-AppLog "$Action cancelled for $($row.Name) ($($row.Guid))" 'INFO'
+            continue
+        }
         if ($Action -eq 'Lock') {
             [void](Lock-Adapter   -Guid $row.Guid -Name $row.Name)
         } else {
@@ -901,7 +1158,7 @@ $LoadPolicyBtn.Add_Click({
     }
 })
 $OpenNcpaBtn.Add_Click({ try { Start-Process 'ncpa.cpl' } catch { Write-AppLog "ncpa open failed: $($_.Exception.Message)" 'ERROR' } })
-$OpenLogBtn.Add_Click({  try { Start-Process (Split-Path $script:LogPath) } catch { } })
+$OpenLogBtn.Add_Click({  try { Start-Process (Split-Path $script:LogPath) } catch { Write-AppLog "log folder open failed: $($_.Exception.Message)" 'ERROR' } })
 
 $window.Add_Loaded({
     Initialize-EventSource

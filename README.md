@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.3.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.4.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -52,8 +52,10 @@ The registry ACL technique is the real solution and what this tool automates.
 
 1. The tool self-elevates and hides its console
 2. Select one or more adapters in the grid
-3. Click **Lock Selected** or **Unlock Selected** — or right-click a row for more options
+3. Click **Lock Selected** or **Unlock Selected** — the GUI asks for confirmation before changing ACLs
 4. Lock state is verified by re-reading the ACL and shown in the `Lock` column
+
+The `Mode` column shows whether the adapter is DHCP or Static. Locking a DHCP adapter shows a warning because lease renewals may be blocked from updating registry values.
 
 The **Lock** badge is colour-coded:
 
@@ -65,7 +67,7 @@ The **Lock** badge is colour-coded:
 
 Hover over the badge for a per-stack breakdown tooltip (e.g. `v4 + v6`, `v4 only (!)`).
 
-Right-click any row to: **Lock**, **Unlock**, **Open in ncpa.cpl**, **Copy MAC**, or **Copy GUID**.
+Right-click any row to: **Lock**, **Unlock**, **Restore from Backup**, **Open in ncpa.cpl**, **Copy MAC**, or **Copy GUID**.
 
 **Save Policy** / **Load Policy** — export the current lock state as JSON, then apply it on another machine or at startup via the enforcement task.
 
@@ -97,6 +99,9 @@ Changes take effect immediately — no reboot, no service restart.
 
 # Remove the scheduled enforcement task
 .\AdapterLock.ps1 -UninstallTask
+
+# Restore the latest saved ACL backup for an adapter
+.\AdapterLock.ps1 -RestoreBackup -Guid "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" -Silent
 ```
 
 Exit codes: `0` = success, `1` = adapter not found / operation failed, `2` = bad arguments.
@@ -118,6 +123,8 @@ Opening TCP/IPv4 properties in `ncpa.cpl` and clicking OK on a changed value wil
 - **SDDL backups:** `%ProgramData%\AdapterLock\Backups\` — ACL snapshot taken before each change; files are named `{Guid}.{keyTag}.{timestamp}.sddl`
 - **Event Log:** Windows Application log, source `AdapterLock`, EventId 1001
 
+Use `-RestoreBackup -Guid "{...}" -Silent` or the row context menu to restore the latest saved SDDL backup for an adapter.
+
 ## Version
 
-v0.3.0
+v0.4.0
