@@ -108,6 +108,9 @@ Changes take effect immediately — no reboot, no service restart.
 
 # Verify and auto-remediate any ACL drift
 .\AdapterLock.ps1 -VerifyLocks -Remediate -Silent
+
+# Query lock state on remote hosts (requires PS remoting)
+.\AdapterLock.ps1 -Query -ComputerName host1,host2,host3 -Silent
 ```
 
 Exit codes: `0` = success, `1` = adapter not found / operation failed / drift detected, `2` = bad arguments.

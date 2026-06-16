@@ -57,6 +57,12 @@
 .PARAMETER Remediate
     When used with -VerifyLocks, automatically re-apply deny ACEs on adapters with drift.
 
+.PARAMETER Query
+    Query lock state of adapters on one or more remote machines via Invoke-Command.
+
+.PARAMETER ComputerName
+    One or more remote computer names to query. Used with -Query.
+
 .EXAMPLE
     .\AdapterLock.ps1
     Launch the WPF GUI for interactive lock/unlock.
@@ -100,11 +106,13 @@ param(
     [switch]$UninstallTask,
     [string]$PolicyFile,
     [switch]$VerifyLocks,
-    [switch]$Remediate
+    [switch]$Remediate,
+    [switch]$Query,
+    [string[]]$ComputerName
 )
 
 
-$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent
+$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent
 $script:IsDryRun = $DryRun.IsPresent
 
 
@@ -656,6 +664,77 @@ function Test-LockIntegrity {
     return $results
 }
 
+function Invoke-RemoteLockQuery {
+    param([string[]]$Targets)
+
+    $queryBlock = {
+        $results = @()
+        try {
+            $adapters = Get-NetAdapter -IncludeHidden:$false -ErrorAction Stop
+        } catch {
+            return @([pscustomobject]@{
+                Computer = $env:COMPUTERNAME
+                Adapter  = 'ERROR'
+                GUID     = ''
+                Locked   = $false
+                Detail   = $_.Exception.Message
+                Mode     = ''
+            })
+        }
+        foreach ($a in $adapters) {
+            $guid = $a.InterfaceGuid
+            $v4 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+            $v6 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\$guid"
+            $nb = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$guid"
+
+            $isDeny = {
+                param([string]$path)
+                if (-not (Test-Path -LiteralPath $path)) { return $false }
+                try {
+                    $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+                    return [bool]($acl.Access | Where-Object {
+                        $_.AccessControlType -eq 'Deny' -and
+                        $_.IdentityReference.Value -match 'Authenticated Users|Everyone|BUILTIN\\Users'
+                    })
+                } catch { return $false }
+            }
+            $v4L = & $isDeny $v4
+            $v6E = Test-Path -LiteralPath $v6
+            $v6L = & $isDeny $v6
+            $nbL = & $isDeny $nb
+
+            $locked = $v4L -and ($v6L -or -not $v6E)
+            $partial = -not $locked -and ($v4L -or $v6L -or $nbL)
+            $badge = if ($locked) { 'LOCKED' } elseif ($partial) { 'PARTIAL' } else { 'Unlocked' }
+
+            $mode = 'Unknown'
+            try {
+                $dhcp = Get-ItemPropertyValue -LiteralPath $v4 -Name EnableDHCP -ErrorAction Stop
+                $mode = if ([int]$dhcp -eq 1) { 'DHCP' } else { 'Static' }
+            } catch {}
+
+            $results += [pscustomobject]@{
+                Computer = $env:COMPUTERNAME
+                Adapter  = $a.Name
+                GUID     = $guid
+                Locked   = $badge
+                Detail   = if ($v4L -and $v6L) { 'v4+v6' } elseif ($v4L) { 'v4' } elseif ($v6L) { 'v6' } else { '-' }
+                Mode     = $mode
+            }
+        }
+        return $results
+    }
+
+    Write-AppLog "Querying $($Targets.Count) remote host(s)..." 'INFO'
+    try {
+        $raw = Invoke-Command -ComputerName $Targets -ScriptBlock $queryBlock -ErrorAction Stop
+        return $raw | Select-Object Computer, Adapter, GUID, Locked, Detail, Mode
+    } catch {
+        Write-AppLog "Remote query failed: $($_.Exception.Message)" 'ERROR'
+        return @()
+    }
+}
+
 function Get-AdapterRow {
     $rows = New-Object System.Collections.ObjectModel.ObservableCollection[object]
     try {
@@ -777,6 +856,17 @@ if ($script:IsCli) {
             exit 1
         }
         Write-AppLog "All locks intact ($($results.Count) adapter(s) verified)" 'OK'
+        exit 0
+    }
+    if ($Query) {
+        if (-not $ComputerName -or $ComputerName.Count -eq 0) {
+            Write-AppLog 'Specify -ComputerName with -Query' 'ERROR'
+            exit 2
+        }
+        Write-AppLog "AdapterLock v$($script:Version) querying remote hosts"
+        $results = Invoke-RemoteLockQuery -Targets $ComputerName
+        if ($results.Count -eq 0) { exit 1 }
+        $results | Format-Table -AutoSize
         exit 0
     }
 
