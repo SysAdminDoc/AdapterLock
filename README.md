@@ -51,9 +51,11 @@ The registry ACL technique is the real solution and what this tool automates.
 ```
 
 1. The tool self-elevates and hides its console
-2. Select one or more adapters in the grid
-3. Click **Lock Selected** or **Unlock Selected** — the GUI asks for confirmation before changing ACLs
-4. Lock state is verified by re-reading the ACL and shown in the `Lock` column
+2. Type in the **filter box** to narrow adapters by name, description, MAC, IPv4, or GUID
+3. Select one or more adapters in the grid
+4. Click **Lock Selected** or **Unlock Selected** — the GUI asks for confirmation before changing ACLs
+5. Lock state is verified by re-reading the ACL and shown in the `Lock` column
+6. Click **Show Hidden** to reveal unplugged/ghost adapters (shown with "(hidden)" label)
 
 The `Mode` column shows whether the adapter is DHCP or Static. Locking a DHCP adapter shows a warning because lease renewals may be blocked from updating registry values.
 
@@ -139,7 +141,7 @@ Opening TCP/IPv4 properties in `ncpa.cpl` and clicking OK on a changed value wil
 
 - **Log:** `%APPDATA%\AdapterLock\adapterlock.log` — every lock/unlock operation
 - **SDDL backups:** `%ProgramData%\AdapterLock\Backups\` — ACL snapshot taken before each change; files are named `{Guid}.{keyTag}.{timestamp}.sddl`
-- **Event Log:** Windows Application log, source `AdapterLock`, EventId 1001
+- **Event Log:** Windows Application log, source `AdapterLock`, EventId 1001 (lock/unlock), EventId 1002 (WMI drift watcher)
 
 Use `-RestoreBackup -Guid "{...}" -Silent` or the row context menu to restore the latest saved SDDL backup for an adapter.
 
@@ -148,6 +150,19 @@ Use `-RestoreBackup -Guid "{...}" -Silent` or the row context menu to restore th
 ```powershell
 Invoke-Pester -Script .\AdapterLock.Tests.ps1
 Invoke-ScriptAnalyzer -Path .\AdapterLock.ps1 -Severity Error,Warning
+```
+
+## Build / Package
+
+```powershell
+# Validate metadata, help, and run tests
+.\build.ps1 -Validate
+
+# Validate + create dist/ archive
+.\build.ps1 -Package
+
+# Build standalone .exe (requires ps2exe module)
+.\build-exe.ps1
 ```
 
 ## Version
