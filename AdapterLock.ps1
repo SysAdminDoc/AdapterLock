@@ -937,6 +937,7 @@ if ($script:IsCli) {
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="170"/>
@@ -948,12 +949,19 @@ if ($script:IsCli) {
             <TextBlock Text="AdapterLock" FontSize="22" FontWeight="Bold" Foreground="{StaticResource Mauve}"/>
             <TextBlock x:Name="VersionText" Text=" v0.6.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
         </StackPanel>
-        <TextBlock Grid.Row="1" Margin="0,0,0,12"
+        <TextBlock Grid.Row="1" Margin="0,0,0,8"
                    Text="Per-adapter IP lockdown via registry ACL. Locks Tcpip\Interfaces\{GUID} so ncpa.cpl, netsh, and Set-NetIPAddress all fail - even for local admins. Right-click a row for more options."
                    Foreground="{StaticResource Subtext}" TextWrapping="Wrap"/>
 
+        <!-- Filter -->
+        <TextBox Grid.Row="2" x:Name="FilterBox" Margin="0,0,0,8"
+                 FontFamily="Segoe UI" FontSize="13"
+                 Background="{StaticResource Crust}" Foreground="{StaticResource Text}"
+                 BorderBrush="{StaticResource Surface1}" BorderThickness="1"
+                 Padding="8,6"/>
+
         <!-- Adapter grid -->
-        <DataGrid Grid.Row="2" x:Name="AdapterGrid">
+        <DataGrid Grid.Row="3" x:Name="AdapterGrid">
             <DataGrid.Columns>
                 <DataGridTemplateColumn Header="Type" Width="50">
                     <DataGridTemplateColumn.CellTemplate>
@@ -996,7 +1004,7 @@ if ($script:IsCli) {
         </DataGrid>
 
         <!-- Button row -->
-        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,12,0,12">
+        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,12,0,12">
             <Button x:Name="LockBtn"     Content="Lock Selected"   Margin="0,0,8,0"/>
             <Button x:Name="UnlockBtn"   Content="Unlock Selected" Margin="0,0,8,0"/>
             <Button x:Name="RefreshBtn"  Content="Refresh"         Margin="0,0,8,0"/>
@@ -1007,13 +1015,13 @@ if ($script:IsCli) {
         </StackPanel>
 
         <!-- Log -->
-        <TextBox Grid.Row="4" x:Name="LogBox" IsReadOnly="True"
+        <TextBox Grid.Row="5" x:Name="LogBox" IsReadOnly="True"
                  VerticalScrollBarVisibility="Auto"
                  HorizontalScrollBarVisibility="Auto"
                  TextWrapping="NoWrap"/>
 
         <!-- Status bar -->
-        <Grid Grid.Row="5" Margin="0,8,0,0">
+        <Grid Grid.Row="6" Margin="0,8,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
@@ -1035,7 +1043,9 @@ $script:AdapterGrid = $window.FindName('AdapterGrid')
 $script:LogBox      = $window.FindName('LogBox')
 $script:StatusText  = $window.FindName('StatusText')
 $script:VersionText = $window.FindName('VersionText')
+$script:FilterBox   = $window.FindName('FilterBox')
 $script:SkipActionConfirm = $false
+$script:AllRows     = $null
 
 $LockBtn     = $window.FindName('LockBtn')
 $UnlockBtn   = $window.FindName('UnlockBtn')
@@ -1263,14 +1273,33 @@ $ctxCopyGuid.Add_Click({
 # --- Grid helpers ---
 function Show-AdapterGrid {
     $script:StatusText.Text = 'Scanning adapters...'
-    $rows = Get-AdapterRow
-    $script:AdapterGrid.ItemsSource = $rows
-    $locked  = ($rows | Where-Object { $_.IsLocked }).Count
-    $partial = ($rows | Where-Object { $_.LockBadge -eq 'PARTIAL' }).Count
-    $msg     = "Loaded $($rows.Count) adapter(s). $locked locked"
+    $script:AllRows = Get-AdapterRow
+    Update-AdapterFilter
+    $locked  = ($script:AllRows | Where-Object { $_.IsLocked }).Count
+    $partial = ($script:AllRows | Where-Object { $_.LockBadge -eq 'PARTIAL' }).Count
+    $msg     = "Loaded $($script:AllRows.Count) adapter(s). $locked locked"
     if ($partial -gt 0) { $msg += " ($partial partial)" }
     $script:StatusText.Text = $msg + '.'
-    Write-AppLog "Refresh: $($rows.Count) adapters, $locked locked, $partial partial"
+    Write-AppLog "Refresh: $($script:AllRows.Count) adapters, $locked locked, $partial partial"
+}
+
+function Update-AdapterFilter {
+    $term = $script:FilterBox.Text.Trim()
+    if (-not $term) {
+        $script:AdapterGrid.ItemsSource = $script:AllRows
+        return
+    }
+    $filtered = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+    foreach ($r in $script:AllRows) {
+        if ($r.Name        -like "*$term*" -or
+            $r.Description -like "*$term*" -or
+            $r.MAC         -like "*$term*" -or
+            $r.IPv4        -like "*$term*" -or
+            $r.Guid        -like "*$term*") {
+            $filtered.Add($r) | Out-Null
+        }
+    }
+    $script:AdapterGrid.ItemsSource = $filtered
 }
 
 function Invoke-SelectedAdapterAction {
@@ -1297,6 +1326,23 @@ function Invoke-SelectedAdapterAction {
 $LockBtn.Add_Click({     Invoke-SelectedAdapterAction -Action 'Lock' })
 $UnlockBtn.Add_Click({   Invoke-SelectedAdapterAction -Action 'Unlock' })
 $RefreshBtn.Add_Click({  Show-AdapterGrid })
+$script:FilterBox.Text = 'Filter adapters...'
+$script:FilterBox.Foreground = Get-CMBrush '#FF585B70'
+$script:FilterBox.Add_GotFocus({
+    if ($script:FilterBox.Text -eq 'Filter adapters...') {
+        $script:FilterBox.Text = ''
+        $script:FilterBox.Foreground = Get-CMBrush '#FFCDD6F4'
+    }
+})
+$script:FilterBox.Add_LostFocus({
+    if (-not $script:FilterBox.Text.Trim()) {
+        $script:FilterBox.Text = 'Filter adapters...'
+        $script:FilterBox.Foreground = Get-CMBrush '#FF585B70'
+    }
+})
+$script:FilterBox.Add_TextChanged({
+    if ($script:FilterBox.Text -ne 'Filter adapters...') { Update-AdapterFilter }
+})
 $SavePolicyBtn.Add_Click({
     $dlg = New-Object System.Windows.Forms.SaveFileDialog
     $dlg.Filter = 'JSON files (*.json)|*.json'
