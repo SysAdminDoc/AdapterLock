@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.4.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.5.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -125,6 +125,12 @@ Opening TCP/IPv4 properties in `ncpa.cpl` and clicking OK on a changed value wil
 
 Use `-RestoreBackup -Guid "{...}" -Silent` or the row context menu to restore the latest saved SDDL backup for an adapter.
 
+## Testing
+
+```powershell
+Invoke-Pester -Script .\AdapterLock.Tests.ps1
+```
+
 ## Version
 
-v0.4.0
+v0.5.0

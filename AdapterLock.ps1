@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-# AdapterLock v0.4.0
+# AdapterLock v0.5.0
 # Per-adapter IP lockdown via registry ACL on Tcpip\Parameters\Interfaces\{GUID}
 # Blocks ncpa.cpl / netsh / Set-NetIPAddress from modifying the selected NIC,
 # even for local administrators. Unlock restores normal ACLs.
@@ -87,7 +87,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.4.0'
+$script:Version   = '0.5.0'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -780,7 +780,7 @@ if ($script:IsCli) {
         <!-- Header -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
             <TextBlock Text="AdapterLock" FontSize="22" FontWeight="Bold" Foreground="{StaticResource Mauve}"/>
-            <TextBlock x:Name="VersionText" Text=" v0.4.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
+            <TextBlock x:Name="VersionText" Text=" v0.5.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
         </StackPanel>
         <TextBlock Grid.Row="1" Margin="0,0,0,12"
                    Text="Per-adapter IP lockdown via registry ACL. Locks Tcpip\Interfaces\{GUID} so ncpa.cpl, netsh, and Set-NetIPAddress all fail - even for local admins. Right-click a row for more options."
