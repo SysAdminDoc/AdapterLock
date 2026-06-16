@@ -1,17 +1,84 @@
-#Requires -Version 5.1
-# AdapterLock v0.6.0
-# Per-adapter IP lockdown via registry ACL on Tcpip\Parameters\Interfaces\{GUID}
-# Blocks ncpa.cpl / netsh / Set-NetIPAddress from modifying the selected NIC,
-# even for local administrators. Unlock restores normal ACLs.
-#
-# GUI mode  : .\AdapterLock.ps1
-# CLI mode  : .\AdapterLock.ps1 -Lock   [-Adapter <name>|-Mac <mac>|-Guid <guid>] [-Silent] [-DryRun]
-#             .\AdapterLock.ps1 -Unlock [-Adapter <name>|-Mac <mac>|-Guid <guid>] [-Silent] [-DryRun]
-#             .\AdapterLock.ps1 -LoadPolicy <file> [-Silent]
-#             .\AdapterLock.ps1 -RestoreBackup -Guid <guid> [-Silent]
-#             .\AdapterLock.ps1 -InstallTask [-PolicyFile <file>]
-#             .\AdapterLock.ps1 -UninstallTask
+<#
+.SYNOPSIS
+    Per-adapter IP lockdown via registry ACL deny ACEs.
 
+.DESCRIPTION
+    Locks a specific NIC's TCP/IP configuration at the registry ACL level so that
+    ncpa.cpl, netsh, Set-NetIPAddress, and DHCP reassignment all fail with access
+    denied on that interface -- even for local administrators -- while every other
+    adapter stays fully editable.
+
+    Works by adding a Deny ACE for Authenticated Users (S-1-5-11) on SetValue,
+    CreateSubKey, Delete, and WriteKey on the adapter's Tcpip, Tcpip6, and NetBT
+    interface registry keys. Admins retain WRITE_DAC so the tool can always unlock.
+
+    Run without parameters for the WPF GUI. Use -Lock/-Unlock with -Silent for
+    headless deployment via Intune, SCCM, or GPO startup scripts.
+
+.PARAMETER Lock
+    Lock the specified adapter (deny IP config writes).
+
+.PARAMETER Unlock
+    Unlock the specified adapter (remove deny ACEs).
+
+.PARAMETER Adapter
+    Target adapter by display name (e.g. "Ethernet", "PACS Link").
+
+.PARAMETER Mac
+    Target adapter by MAC address. Separators (colons, hyphens) are normalised automatically.
+
+.PARAMETER Guid
+    Target adapter by interface GUID (e.g. "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}").
+
+.PARAMETER Silent
+    Suppress the GUI and run in CLI mode. Required for headless deployment.
+
+.PARAMETER DryRun
+    Preview which registry keys would be modified without writing any ACL changes.
+
+.PARAMETER LoadPolicy
+    Path to a JSON policy file to load and enforce. Each adapter in the policy is locked.
+
+.PARAMETER RestoreBackup
+    Restore the latest saved SDDL backup for the adapter specified by -Guid.
+
+.PARAMETER InstallTask
+    Register a scheduled task that re-applies the lock policy at system startup.
+
+.PARAMETER UninstallTask
+    Remove the AdapterLock scheduled enforcement task.
+
+.PARAMETER PolicyFile
+    Path to the policy file used by -InstallTask. Defaults to %ProgramData%\AdapterLock\policy.json.
+
+.EXAMPLE
+    .\AdapterLock.ps1
+    Launch the WPF GUI for interactive lock/unlock.
+
+.EXAMPLE
+    .\AdapterLock.ps1 -Lock -Adapter "Ethernet" -Silent
+    Lock the adapter named "Ethernet" in headless mode.
+
+.EXAMPLE
+    .\AdapterLock.ps1 -Unlock -Mac "AA:BB:CC:DD:EE:FF" -Silent
+    Unlock the adapter with the given MAC address.
+
+.EXAMPLE
+    .\AdapterLock.ps1 -Lock -Adapter "Ethernet" -Silent -DryRun
+    Preview which registry keys would be locked without making changes.
+
+.EXAMPLE
+    .\AdapterLock.ps1 -LoadPolicy C:\policy.json -Silent
+    Load and enforce a JSON policy file.
+
+.EXAMPLE
+    .\AdapterLock.ps1 -RestoreBackup -Guid "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" -Silent
+    Restore the latest SDDL backup for the specified adapter.
+
+.LINK
+    https://github.com/SysAdminDoc/AdapterLock
+#>
+#Requires -Version 5.1
 [CmdletBinding()]
 param(
     [switch]$Lock,
