@@ -166,6 +166,17 @@ Describe 'AdapterLock core functions' {
         $result.Count | Should Be 0
     }
 
+    It 'covers all three IP stack keys per adapter' {
+        Import-AdapterLockFunction -Name 'Get-InterfaceKeyPath'
+        $guid = '{11111111-1111-1111-1111-111111111111}'
+        $paths = Get-InterfaceKeyPath -Guid $guid
+
+        $paths.Count | Should Be 3
+        ($paths | Where-Object { $_ -match 'Tcpip\\Parameters\\Interfaces' }) | Should Not BeNullOrEmpty
+        ($paths | Where-Object { $_ -match 'Tcpip6\\Parameters\\Interfaces' }) | Should Not BeNullOrEmpty
+        ($paths | Where-Object { $_ -match 'NetBT\\Parameters\\Interfaces' }) | Should Not BeNullOrEmpty
+    }
+
     It 'classifies NIC types' {
         Import-AdapterLockFunction -Name 'Get-NicType'
 
