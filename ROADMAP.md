@@ -1,0 +1,125 @@
+# AdapterLock Roadmap
+
+Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
+
+## Research-Driven Additions
+
+### P0
+
+- [ ] P0 -- Replace the WMI drift watcher with full-stack hierarchy coverage
+  Why: The watcher currently monitors only `Tcpip` with a value-change query while AdapterLock enforces `Tcpip`, `Tcpip6`, and `NetBT`.
+  Evidence: `AdapterLock.ps1:405`, `AdapterLock.ps1:429`, `AdapterLock.ps1:612`; Microsoft `RegistryTreeChangeEvent`.
+  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
+  Acceptance: installing the watcher creates coverage for all enforced stack keys, tests assert the WQL/classes used, EventId 1002 documents the exact watched surfaces, and drift on IPv4, IPv6, or NetBT is reported.
+  Complexity: M
+
+- [ ] P0 -- Make policy import/apply state-safe
+  Why: Exported `partial` entries are currently applied as full locks, and malformed states or duplicate targets are not rejected.
+  Evidence: `AdapterLock.ps1:315`, `AdapterLock.ps1:321`, `AdapterLock.ps1:345`, `AdapterLock.ps1:1075`, `AdapterLock.ps1:2125`.
+  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
+  Acceptance: policy validation rejects invalid state/GUID/MAC/duplicate targets, `partial` entries require explicit remediation or are skipped with a warning, CLI and GUI show a before/apply summary, and `-DryRun -LoadPolicy` performs no ACL writes.
+  Complexity: M
+
+- [ ] P0 -- HTML-encode fleet report output
+  Why: Remote adapter and host fields are interpolated directly into generated HTML.
+  Evidence: `AdapterLock.ps1:915`, `AdapterLock.ps1:922`; OWASP output encoding guidance.
+  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`.
+  Acceptance: report rows encode `<`, `>`, `"`, `'`, and `&`; a Pester test proves hostile adapter names render as text, not markup; report layout remains unchanged.
+  Complexity: S
+
+- [ ] P0 -- Re-verify after `-VerifyLocks -Remediate` and return truthful exit codes
+  Why: Remediation currently exits `1` based on pre-fix drift even when `Lock-Adapter` succeeds.
+  Evidence: `AdapterLock.ps1:1091`, `AdapterLock.ps1:1100`; Microsoft Intune remediation detection/remediation model.
+  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
+  Acceptance: remediation runs a second integrity check, exits `0` only when post-fix state is clean, exits `1` when drift remains, and logs both original drift and final state.
+  Complexity: S
+
+- [ ] P0 -- Fail closed when installing enforcement without a policy
+  Why: The startup task currently falls back to `-DryRun -Silent`, which looks installed but enforces nothing.
+  Evidence: `AdapterLock.ps1:371`, `AdapterLock.ps1:379`; README startup-task workflow.
+  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
+  Acceptance: `-InstallTask` errors with a clear message when no policy exists, or explicitly exports the current locked state before registering; no installed enforcement task may be dry-run by default.
+  Complexity: S
+
+### P1
+
+- [ ] P1 -- Move WPF scan and lock operations to background workers
+  Why: Adapter scanning and ACL writes run synchronously on the WPF UI thread and can freeze the window on slow registry/WMI paths.
+  Evidence: `AdapterLock.ps1:1999`, `AdapterLock.ps1:2007`, `AdapterLock.ps1:2075`; WPF threading model guidance.
+  Touches: `AdapterLock.ps1`.
+  Acceptance: refresh, lock, unlock, apply-policy, and restore disable relevant controls, show progress/status, keep the window responsive, marshal UI updates through Dispatcher, and leave no stuck busy state after errors.
+  Complexity: L
+
+- [ ] P1 -- Add machine-readable fleet query and report outputs
+  Why: RMM, SIEM, Intune, and automation tools need JSON/CSV output instead of only `Format-Table` or HTML.
+  Evidence: `AdapterLock.ps1:1105`, `AdapterLock.ps1:1113`, `AdapterLock.ps1:1116`; PDQ/NinjaOne/Intune reporting patterns.
+  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
+  Acceptance: `-Query` and `-Report` can emit JSON and CSV with stable fields, preserve HTML as default report format, return non-zero on unreachable hosts only when no usable results exist, and document examples.
+  Complexity: M
+
+- [ ] P1 -- Add backup inventory and exact restore selection
+  Why: Restore currently chooses the latest matching SDDL backup per key, which is not enough for rollback after repeated lock/unlock attempts.
+  Evidence: `AdapterLock.ps1:560`, `AdapterLock.ps1:574`, `README.md:141`.
+  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
+  Acceptance: CLI exposes `-ListBackups` and exact backup selection, GUI restore shows timestamp/key/source choices before applying, and tests cover latest and explicit restore paths.
+  Complexity: M
+
+- [ ] P1 -- Ship an enterprise deployment kit without requiring credentials
+  Why: The target users deploy through Intune, SCCM, GPO startup scripts, and RMMs, but the repo has no ready detection/remediation package or task XML.
+  Evidence: `README.md:79`, `README.md:115`, Microsoft Intune Remediations, PDQ/NinjaOne deployment docs.
+  Touches: `AdapterLock.ps1`, `build.ps1`, `README.md`.
+  Acceptance: release artifacts include sample Intune detection/remediation commands, GPO scheduled-task XML or documented commands, RMM-safe exit-code guidance, and a minimal deployment checklist that does not require PSGallery or a signing certificate.
+  Complexity: M
+
+- [ ] P1 -- Harden exe/package build provenance
+  Why: `build-exe.ps1` auto-installs `ps2exe` and emits no SHA256 or provenance manifest for the unsigned executable.
+  Evidence: `build-exe.ps1:11`, `build-exe.ps1:23`; Simple IP Config unknown-publisher and Defender issue signals.
+  Touches: `build-exe.ps1`, `build.ps1`, `README.md`.
+  Acceptance: builds require an explicit ps2exe prerequisite or pinned version check, emit SHA256 hashes for script/zip/exe artifacts, record ps2exe version, and clearly label unsigned artifacts until code signing is available.
+  Complexity: M
+
+- [ ] P1 -- Gate builds with analyzer and high-risk behavior tests
+  Why: README documents ScriptAnalyzer, but `build.ps1` does not run it; current tests miss report encoding, watcher WQL, policy state safety, and remediation exit behavior.
+  Evidence: `README.md:151`, `build.ps1:29`, `build.ps1:44`, `AdapterLock.Tests.ps1:252`.
+  Touches: `build.ps1`, `.vscode/PSScriptAnalyzer.psd1`, `AdapterLock.Tests.ps1`.
+  Acceptance: `.\build.ps1 -Validate` runs PSScriptAnalyzer with repo settings and fails on warnings/errors, and Pester covers WMI watcher coverage, HTML encoding, policy validation/apply planning, task fail-closed behavior, and remediate re-check.
+  Complexity: M
+
+### P2
+
+- [ ] P2 -- Centralize local and remote lock-state evaluation
+  Why: Remote query duplicates the local ACL/key-state logic, so future stack or identity-rule changes can drift.
+  Evidence: `AdapterLock.ps1:610`, `AdapterLock.ps1:821`.
+  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`.
+  Acceptance: local UI, CLI verify, HTML/JSON/CSV report, and remote query use one shared lock-state schema with identical `LOCKED`/`PARTIAL`/`Unlocked` semantics.
+  Complexity: M
+
+- [ ] P2 -- Add CLI adapter discovery and ambiguity feedback
+  Why: CLI users must know exact names, MACs, or GUIDs before acting, while competitor and community issues show adapter discovery/refresh is a recurring failure point.
+  Evidence: `AdapterLock.ps1:1137`, `AdapterLock.ps1:1144`; Simple IP Config issue #206; Net Profiles mod dynamic-interface issue #75.
+  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
+  Acceptance: `-ListAdapters -Silent` outputs visible/hidden adapter identifiers in table/JSON modes, failed matches include nearest visible candidates, and ambiguous names do not perform ACL writes.
+  Complexity: S
+
+- [ ] P2 -- Add accessibility and compact-layout regression checks
+  Why: The v0.8.0 UI was render-checked manually, but there is no repeatable focus/name/contrast/overflow guard.
+  Evidence: `CLAUDE.md:43`; Simple IP Config scaling issues #181/#204/#209.
+  Touches: `AdapterLock.ps1`, `build.ps1`, test tooling.
+  Acceptance: validation captures at least compact and default WPF layouts, checks no clipped primary controls, verifies focusable controls have names/tooltips, and records any manual-only accessibility gaps.
+  Complexity: M
+
+- [ ] P2 -- Add PowerShell `SupportsShouldProcess` compatibility around state changes
+  Why: AdapterLock has `-DryRun`, but PowerShell admins expect `-WhatIf`/`-Confirm` semantics for registry ACL changes.
+  Evidence: `Lock-Adapter` and `Unlock-Adapter` state changes at `AdapterLock.ps1:680`, `AdapterLock.ps1:725`; PowerShell ShouldProcess guidance.
+  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
+  Acceptance: state-changing CLI paths support `-WhatIf` without writes, existing `-DryRun` behavior remains compatible, and tests prove no `Set-Acl` call occurs under preview modes.
+  Complexity: M
+
+### P3
+
+- [ ] P3 -- Add an optional compact read-only status mode
+  Why: NetSetMan and Net Profiles mod show tray/compact status value, but AdapterLock should expose this only as read-only enforcement visibility, not profile switching.
+  Evidence: NetSetMan compact/tray documentation; Net Profiles mod tray enhancement issues #71/#72.
+  Touches: `AdapterLock.ps1`, `README.md`.
+  Acceptance: optional compact mode shows lock counts, selected adapter detail, last drift event, and open log/report actions without adding background profile switching or new persistent services.
+  Complexity: L
