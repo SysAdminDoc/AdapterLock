@@ -6,13 +6,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
 
 ### P1
 
-- [ ] P1 -- Ship an enterprise deployment kit without requiring credentials
-  Why: The target users deploy through Intune, SCCM, GPO startup scripts, and RMMs, but the repo has no ready detection/remediation package or task XML.
-  Evidence: `README.md:79`, `README.md:115`, Microsoft Intune Remediations, PDQ/NinjaOne deployment docs.
-  Touches: `AdapterLock.ps1`, `build.ps1`, `README.md`.
-  Acceptance: release artifacts include sample Intune detection/remediation commands, GPO scheduled-task XML or documented commands, RMM-safe exit-code guidance, and a minimal deployment checklist that does not require PSGallery or a signing certificate.
-  Complexity: M
-
 - [ ] P1 -- Harden exe/package build provenance
   Why: `build-exe.ps1` auto-installs `ps2exe` and emits no SHA256 or provenance manifest for the unsigned executable.
   Evidence: `build-exe.ps1:11`, `build-exe.ps1:23`; Simple IP Config unknown-publisher and Defender issue signals.

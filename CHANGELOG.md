@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.5 - 2026-06-17
+
+### Added
+- **Generated enterprise deployment kit** -- `build.ps1 -Package` now emits Intune detection/remediation scripts, an RMM JSON verification sample, a startup-task installer sample, a GPO task XML template, and a plain-text deployment checklist under `dist\deployment\`.
+
 ## v0.8.4 - 2026-06-17
 
 ### Added

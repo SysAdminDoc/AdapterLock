@@ -8,6 +8,124 @@ param(
 $ErrorActionPreference = 'Stop'
 $scriptPath = Join-Path $PSScriptRoot 'AdapterLock.ps1'
 
+function Write-TextFile {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+    Set-Content -LiteralPath $Path -Value $Content.TrimStart() -Encoding ASCII -ErrorAction Stop
+}
+
+function New-DeploymentKit {
+    param(
+        [string]$Root,
+        [string]$Version
+    )
+
+    $kitDir = Join-Path $Root 'deployment'
+    New-Item -ItemType Directory -Force -Path $kitDir | Out-Null
+
+    Write-TextFile -Path (Join-Path $kitDir 'intune-detect.ps1') -Content @'
+# AdapterLock Intune detection sample.
+# Exit 0 = compliant, exit 1 = drift/non-compliant, exit 2 = argument error.
+$ErrorActionPreference = 'Stop'
+$adapterLock = Join-Path $PSScriptRoot 'AdapterLock.ps1'
+if (-not (Test-Path -LiteralPath $adapterLock)) {
+    Write-Output 'AdapterLock.ps1 not found next to detection script.'
+    exit 1
+}
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapterLock -VerifyLocks -Silent
+exit $LASTEXITCODE
+'@
+
+    Write-TextFile -Path (Join-Path $kitDir 'intune-remediate.ps1') -Content @'
+# AdapterLock Intune remediation sample.
+# Exit 0 = remediated or already clean, exit 1 = drift remains.
+$ErrorActionPreference = 'Stop'
+$adapterLock = Join-Path $PSScriptRoot 'AdapterLock.ps1'
+if (-not (Test-Path -LiteralPath $adapterLock)) {
+    Write-Output 'AdapterLock.ps1 not found next to remediation script.'
+    exit 1
+}
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapterLock -VerifyLocks -Remediate -Silent
+exit $LASTEXITCODE
+'@
+
+    Write-TextFile -Path (Join-Path $kitDir 'rmm-verify.ps1') -Content @'
+# AdapterLock RMM verification sample.
+# Writes JSON fleet state to stdout for tools that capture script output.
+param(
+    [string[]]$ComputerName = @($env:COMPUTERNAME)
+)
+$ErrorActionPreference = 'Stop'
+$adapterLock = Join-Path $PSScriptRoot 'AdapterLock.ps1'
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapterLock -Query -ComputerName $ComputerName -OutputFormat Json -Silent
+exit $LASTEXITCODE
+'@
+
+    Write-TextFile -Path (Join-Path $kitDir 'install-startup-task.ps1') -Content @'
+# AdapterLock startup enforcement task installer sample.
+param(
+    [string]$PolicyFile = "$env:ProgramData\AdapterLock\policy.json"
+)
+$ErrorActionPreference = 'Stop'
+$adapterLock = Join-Path $PSScriptRoot 'AdapterLock.ps1'
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapterLock -InstallTask -PolicyFile $PolicyFile
+exit $LASTEXITCODE
+'@
+
+    Write-TextFile -Path (Join-Path $kitDir 'AdapterLock-Enforce.xml') -Content @'
+<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>AdapterLock startup enforcement template. Replace __ADAPTERLOCK_SCRIPT_PATH__ and __POLICY_PATH__ before import.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "__ADAPTERLOCK_SCRIPT_PATH__" -LoadPolicy "__POLICY_PATH__" -Silent</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+'@
+
+    Write-TextFile -Path (Join-Path $kitDir 'deployment-checklist.txt') -Content @"
+AdapterLock v$Version deployment checklist
+
+1. Put AdapterLock.ps1 and a validated adapter policy JSON on the endpoint.
+2. Run detection with intune-detect.ps1 or: powershell.exe -NoProfile -ExecutionPolicy Bypass -File AdapterLock.ps1 -VerifyLocks -Silent
+3. Run remediation with intune-remediate.ps1 or: powershell.exe -NoProfile -ExecutionPolicy Bypass -File AdapterLock.ps1 -VerifyLocks -Remediate -Silent
+4. For startup enforcement, run install-startup-task.ps1 -PolicyFile <policy.json> or import AdapterLock-Enforce.xml after replacing placeholders.
+5. RMM exit codes: 0 = clean/success, 1 = drift or operation failure, 2 = bad arguments.
+6. Unsigned artifacts may still require execution-policy handling, code signing, or your endpoint management trust policy.
+"@
+
+    return $kitDir
+}
+
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     $packageManagement = Get-Module -ListAvailable PackageManagement |
         Where-Object { $_.Path -like '*WindowsPowerShell*' } |
@@ -80,8 +198,11 @@ if ($Package) {
     Copy-Item -Path $scriptPath -Destination $destScript -Force
     Write-Host "--- Packaged: $destScript ---"
 
+    $deploymentDir = New-DeploymentKit -Root $OutputDir -Version $version
+    Write-Host "--- Deployment kit: $deploymentDir ---"
+
     $zipPath = Join-Path $OutputDir "AdapterLock-v$version.zip"
-    $filesToZip = @($scriptPath, (Join-Path $PSScriptRoot 'LICENSE'), (Join-Path $PSScriptRoot 'README.md'))
+    $filesToZip = @($scriptPath, (Join-Path $PSScriptRoot 'LICENSE'), (Join-Path $PSScriptRoot 'README.md'), $deploymentDir)
     $filesToZip = $filesToZip | Where-Object { Test-Path $_ }
     Compress-Archive -Path $filesToZip -DestinationPath $zipPath -Force
     Write-Host "--- Archive: $zipPath ---"
