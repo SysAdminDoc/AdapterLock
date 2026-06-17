@@ -44,14 +44,19 @@ Describe 'AdapterLock core functions' {
                 [string]$AccessControlType = 'Deny'
             )
 
-            [pscustomobject]@{
+            $acl = [pscustomobject]@{
                 Access = @(
                     [pscustomobject]@{
                         AccessControlType = $AccessControlType
                         IdentityReference = [pscustomobject]@{ Value = $Identity }
                     }
                 )
+                Sddl = 'O:BAG:BAD:'
             }
+            $acl | Add-Member -MemberType ScriptMethod -Name SetSecurityDescriptorSddlForm -Value {
+                param([string]$Value)
+                $this.Sddl = $Value
+            } -PassThru
         }
     }
 
@@ -185,16 +190,16 @@ Describe 'AdapterLock core functions' {
         Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
 
         $badStatePath = Join-Path $TestDrive 'bad-state.json'
-        @{ Version = '0.8.3'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @{ Version = '0.8.4'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
         @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
 
         $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
-        @{ Version = '0.8.3'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @{ Version = '0.8.4'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
         @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
 
         $duplicatePath = Join-Path $TestDrive 'duplicate.json'
         @{
-            Version = '0.8.3'
+            Version = '0.8.4'
             Adapters = @(
                 @{ Name = 'Ethernet'; State = 'locked' }
                 @{ Name = 'Ethernet'; State = 'locked' }
@@ -220,6 +225,50 @@ Describe 'AdapterLock core functions' {
         $results[0].Status | Should -Be 'DryRun'
         $results[1].Status | Should -Be 'SkippedPartial'
         Should -Invoke -CommandName Lock-Adapter -Times 1
+    }
+
+    It 'lists parsed SDDL backup records for an adapter' {
+        Import-AdapterLockFunction -Name 'Get-AdapterBackupRecord', 'ConvertFrom-AdapterBackupFile', 'Resolve-BackupFile'
+        $script:BackupDir = Join-Path $TestDrive 'Backups'
+        New-Item -ItemType Directory -Force -Path $script:BackupDir | Out-Null
+        $guid = '{11111111-1111-1111-1111-111111111111}'
+        $safeGuid = $guid -replace '[{}]', ''
+        Set-Content -LiteralPath (Join-Path $script:BackupDir "${safeGuid}.Tcpip.$guid.20260617-010101.sddl") -Value 'D:AI'
+        Set-Content -LiteralPath (Join-Path $script:BackupDir "${safeGuid}.NetBT.Tcpip_$guid.20260617-010102.sddl") -Value 'D:AI'
+
+        $records = @(Get-AdapterBackupRecord -Guid $guid)
+
+        $records.Count | Should -Be 2
+        $records.Stack | Should -Contain 'Tcpip'
+        $records.Stack | Should -Contain 'NetBT'
+        $records[0].Path | Should -Not -BeNullOrEmpty
+    }
+
+    It 'restores an exact selected SDDL backup file to its stack key' {
+        Import-AdapterLockFunction -Name 'Restore-AdapterSddl', 'Get-InterfaceKeyPath', 'Get-BackupKeyTag', 'Get-AdapterBackupRecord', 'ConvertFrom-AdapterBackupFile', 'Resolve-BackupFile', 'Get-BackupRestorePath', 'Invoke-SddlRestore', 'Write-EvtLog'
+        $script:BackupDir = Join-Path $TestDrive 'Backups'
+        New-Item -ItemType Directory -Force -Path $script:BackupDir | Out-Null
+        $guid = '{11111111-1111-1111-1111-111111111111}'
+        $safeGuid = $guid -replace '[{}]', ''
+        $backupPath = Join-Path $script:BackupDir "${safeGuid}.NetBT.Tcpip_$guid.20260617-010102.sddl"
+        Set-Content -LiteralPath $backupPath -Value 'D:AI'
+
+        Mock -CommandName Test-Path -MockWith { $true }
+        Mock -CommandName Get-Acl -MockWith { New-FakeAcl }
+        $script:RestoredAcl = @()
+        Mock -CommandName Set-Acl -MockWith {
+            $script:RestoredAcl += [pscustomobject]@{
+                Path = $LiteralPath
+                Sddl = $AclObject.Sddl
+            }
+        }
+
+        $result = Restore-AdapterSddl -Guid $guid -Name 'Ethernet' -BackupFile $backupPath
+
+        $result | Should -Be $true
+        $script:RestoredAcl.Count | Should -Be 1
+        $script:RestoredAcl[0].Path | Should -Match 'NetBT\\Parameters\\Interfaces'
+        $script:RestoredAcl[0].Sddl | Should -Be 'D:AI'
     }
 
     It 'detects drift when adapter is partially locked' {
@@ -486,6 +535,11 @@ Describe 'AdapterLock core functions' {
             'Get-AdapterDhcpState',
             'Get-BackupKeyTag',
             'Save-AdapterSddl',
+            'ConvertFrom-AdapterBackupFile',
+            'Resolve-BackupFile',
+            'Get-AdapterBackupRecord',
+            'Get-BackupRestorePath',
+            'Invoke-SddlRestore',
             'Restore-AdapterSddl',
             'Test-AdapterLockedDetailed',
             'Get-LockBadgeFromDetail',

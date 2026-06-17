@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.8.3-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.8.4-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -108,6 +108,10 @@ Changes take effect immediately — no reboot, no service restart.
 # Restore the latest saved ACL backup for an adapter
 .\AdapterLock.ps1 -RestoreBackup -Guid "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" -Silent
 
+# List and restore an exact backup file
+.\AdapterLock.ps1 -ListBackups -Guid "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" -Silent
+.\AdapterLock.ps1 -RestoreBackup -BackupFile "{guid}.NetBT.Tcpip_{guid}.20260617-010102.sddl" -Silent
+
 # Verify all locks are intact (exits 1 if drift detected)
 .\AdapterLock.ps1 -VerifyLocks -Silent
 
@@ -154,7 +158,7 @@ Opening TCP/IPv4 properties in `ncpa.cpl` and clicking OK on a changed value wil
 - **SDDL backups:** `%ProgramData%\AdapterLock\Backups\` — ACL snapshot taken before each change; files are named `{Guid}.{keyTag}.{timestamp}.sddl`
 - **Event Log:** Windows Application log, source `AdapterLock`, EventId 1001 (lock/unlock), EventId 1002 (WMI drift watcher across Tcpip/Tcpip6/NetBT trees)
 
-Use `-RestoreBackup -Guid "{...}" -Silent` or the row context menu to restore the latest saved SDDL backup for an adapter.
+Use `-ListBackups -Guid "{...}" -Silent` to inspect saved SDDL files. Use `-RestoreBackup -Guid "{...}" -Silent` for the latest per-stack restore, `-RestoreBackup -BackupFile <file>` for an exact backup file, or the row context menu to choose a timestamped backup in the GUI.
 
 ## Testing
 
@@ -178,4 +182,4 @@ Invoke-ScriptAnalyzer -Path .\AdapterLock.ps1 -Severity Error,Warning
 
 ## Version
 
-v0.8.3
+v0.8.4

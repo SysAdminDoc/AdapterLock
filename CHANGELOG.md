@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.4 - 2026-06-17
+
+### Added
+- **Backup inventory and exact restore** -- `-ListBackups` lists saved SDDL backups, `-RestoreBackup -BackupFile` restores a selected file, and the GUI restore action now shows timestamped stack/file choices.
+
 ## v0.8.3 - 2026-06-17
 
 ### Added

@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.8.3
+.VERSION 0.8.4
 .GUID fd499ba1-8ce6-4512-877e-9dede49777f5
 .AUTHOR SysAdminDoc
 .DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
@@ -7,7 +7,7 @@
 .TAGS networking adapter lock registry ACL IP security PACS
 .LICENSEURI https://github.com/SysAdminDoc/AdapterLock/blob/master/LICENSE
 .PROJECTURI https://github.com/SysAdminDoc/AdapterLock
-.RELEASENOTES Adds JSON and CSV fleet output for query and report automation.
+.RELEASENOTES Adds SDDL backup inventory and exact backup restore selection.
 #>
 
 <#
@@ -52,7 +52,13 @@
     Path to a JSON policy file to load and enforce. Entries with State=locked are applied; partial entries are skipped with a warning.
 
 .PARAMETER RestoreBackup
-    Restore the latest saved SDDL backup for the adapter specified by -Guid.
+    Restore the latest saved SDDL backup for the adapter specified by -Guid, or an exact backup selected with -BackupFile.
+
+.PARAMETER ListBackups
+    List saved SDDL backups. Use -Guid to filter to one adapter.
+
+.PARAMETER BackupFile
+    Exact SDDL backup file to restore with -RestoreBackup. May be a full path or a file name under the AdapterLock backup directory.
 
 .PARAMETER InstallTask
     Register a scheduled task that re-applies the lock policy at system startup.
@@ -129,6 +135,8 @@ param(
     [switch]$DryRun,
     [string]$LoadPolicy,
     [switch]$RestoreBackup,
+    [switch]$ListBackups,
+    [string]$BackupFile,
     [switch]$InstallTask,
     [switch]$UninstallTask,
     [string]$PolicyFile,
@@ -145,7 +153,7 @@ param(
 )
 
 
-$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent -or $InstallWatcher.IsPresent -or $UninstallWatcher.IsPresent -or $Report.IsPresent
+$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $ListBackups.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent -or $InstallWatcher.IsPresent -or $UninstallWatcher.IsPresent -or $Report.IsPresent
 $script:IsDryRun = $DryRun.IsPresent
 
 
@@ -203,7 +211,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.8.3'
+$script:Version   = '0.8.4'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -744,18 +752,146 @@ function Save-AdapterSddl {
     Write-AppLog "SDDL snapshot saved: $Name ($Guid)" 'INFO'
 }
 
+function ConvertFrom-AdapterBackupFile {
+    param([System.IO.FileInfo]$File)
+    if (-not $File -or $File.Extension -ne '.sddl') { return $null }
+
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($File.Name)
+    $parts = $baseName -split '\.'
+    if ($parts.Count -lt 3) { return $null }
+
+    $safeGuid = $parts[0]
+    $timestamp = $parts[$parts.Count - 1]
+    $keyTag = ($parts[1..($parts.Count - 2)] -join '.')
+    $stack = if ($keyTag -like 'Tcpip6.*') {
+        'Tcpip6'
+    } elseif ($keyTag -like 'NetBT.*') {
+        'NetBT'
+    } else {
+        'Tcpip'
+    }
+
+    return [pscustomobject]@{
+        Guid = "{$safeGuid}"
+        SafeGuid = $safeGuid
+        Stack = $stack
+        KeyTag = $keyTag
+        Timestamp = $timestamp
+        LastWriteTime = $File.LastWriteTime
+        FileName = $File.Name
+        Path = $File.FullName
+        Length = $File.Length
+    }
+}
+
+function Resolve-BackupFile {
+    param([string]$Path)
+    if (-not $Path) { return $null }
+    $candidate = if ([System.IO.Path]::IsPathRooted($Path)) {
+        $Path
+    } else {
+        Join-Path $script:BackupDir $Path
+    }
+    try {
+        return Get-Item -LiteralPath $candidate -ErrorAction Stop
+    } catch {
+        Write-AppLog "Backup file not found: $Path" 'ERROR'
+        return $null
+    }
+}
+
+function Get-AdapterBackupRecord {
+    param(
+        [string]$Guid = '',
+        [string]$BackupFile = ''
+    )
+
+    if ($BackupFile) {
+        $file = Resolve-BackupFile -Path $BackupFile
+        if (-not $file) { return @() }
+        $record = ConvertFrom-AdapterBackupFile -File $file
+        if ($record) { return @($record) }
+        Write-AppLog "Backup file has an unrecognized name: $($file.Name)" 'ERROR'
+        return @()
+    }
+
+    $filter = '*.sddl'
+    if ($Guid) {
+        $safeGuid = $Guid -replace '[{}]', ''
+        $filter = "$safeGuid.*.sddl"
+    }
+    $records = @()
+    Get-ChildItem -LiteralPath $script:BackupDir -Filter $filter -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $record = ConvertFrom-AdapterBackupFile -File $_
+        if ($record) { $records += $record }
+    }
+    return $records | Sort-Object Guid, Stack, LastWriteTime -Descending
+}
+
+function Get-BackupRestorePath {
+    param(
+        [string]$Guid,
+        $Backup
+    )
+    switch ($Backup.Stack) {
+        'Tcpip6' { return "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\$Guid" }
+        'NetBT'  { return "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$Guid" }
+        default  { return "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$Guid" }
+    }
+}
+
+function Invoke-SddlRestore {
+    param(
+        [string]$RegistryPath,
+        [string]$BackupPath
+    )
+    if (-not (Test-Path -LiteralPath $RegistryPath)) {
+        Write-AppLog "Restore skipped missing key: $RegistryPath" 'WARN'
+        return $false
+    }
+    try {
+        $sddl = (Get-Content -LiteralPath $BackupPath -Raw -ErrorAction Stop).Trim()
+        $acl = Get-Acl -LiteralPath $RegistryPath -ErrorAction Stop
+        $acl.SetSecurityDescriptorSddlForm($sddl)
+        Set-Acl -LiteralPath $RegistryPath -AclObject $acl -ErrorAction Stop
+        Write-AppLog "Restored SDDL for $RegistryPath from $(Split-Path $BackupPath -Leaf)" 'OK'
+        return $true
+    } catch {
+        Write-AppLog "SDDL restore failed for $RegistryPath : $($_.Exception.Message)" 'ERROR'
+        return $false
+    }
+}
+
 function Restore-AdapterSddl {
-    param([string]$Guid, [string]$Name = '')
+    param([string]$Guid, [string]$Name = '', [string]$BackupFile = '')
     $safeGuid = $Guid -replace '[{}]', ''
     $displayName = if ($Name) { $Name } else { $Guid }
     $restored = 0
 
-    foreach ($p in (Get-InterfaceKeyPath -Guid $Guid)) {
-        if (-not (Test-Path -LiteralPath $p)) {
-            Write-AppLog "Restore skipped missing key: $p" 'WARN'
-            continue
+    if ($BackupFile) {
+        $backup = @(Get-AdapterBackupRecord -BackupFile $BackupFile | Select-Object -First 1)
+        if ($backup.Count -eq 0) {
+            Write-AppLog "No SDDL backup restored for $displayName ($Guid): exact backup not found" 'ERROR'
+            return $false
         }
+        if ($backup[0].SafeGuid -and $backup[0].SafeGuid -ne $safeGuid) {
+            Write-AppLog "Backup GUID mismatch: $($backup[0].Guid) does not match $Guid" 'ERROR'
+            return $false
+        }
+        $targetPath = Get-BackupRestorePath -Guid $Guid -Backup $backup[0]
+        if (Invoke-SddlRestore -RegistryPath $targetPath -BackupPath $backup[0].Path) {
+            $restored = 1
+        }
+        if ($restored -gt 0) {
+            Write-AppLog "RESTORED $displayName ($Guid) from exact backup $($backup[0].FileName)" 'OK'
+            Write-EvtLog "RESTORED adapter ACL exact backup: $displayName ($Guid) on $env:COMPUTERNAME by $env:USERNAME"
+            return $true
+        }
+        Write-AppLog "No SDDL backups restored for $displayName ($Guid)" 'ERROR'
+        return $false
+    }
 
+    foreach ($p in (Get-InterfaceKeyPath -Guid $Guid)) {
         $keyTag = Get-BackupKeyTag -Path $p
         $legacyKeyTag = ($p -split '\\')[-1]
         $backup = Get-ChildItem -LiteralPath $script:BackupDir -Filter "$safeGuid.$keyTag.*.sddl" -File -ErrorAction SilentlyContinue |
@@ -773,15 +909,8 @@ function Restore-AdapterSddl {
             continue
         }
 
-        try {
-            $sddl = (Get-Content -LiteralPath $backup.FullName -Raw -ErrorAction Stop).Trim()
-            $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
-            $acl.SetSecurityDescriptorSddlForm($sddl)
-            Set-Acl -LiteralPath $p -AclObject $acl -ErrorAction Stop
+        if (Invoke-SddlRestore -RegistryPath $p -BackupPath $backup.FullName) {
             $restored++
-            Write-AppLog "Restored SDDL for $p from $($backup.Name)" 'OK'
-        } catch {
-            Write-AppLog "SDDL restore failed for $p : $($_.Exception.Message)" 'ERROR'
         }
     }
 
@@ -1342,15 +1471,29 @@ if ($script:IsCli) {
         Uninstall-WmiWatcher
         exit 0
     }
+    if ($ListBackups) {
+        Write-AppLog "AdapterLock v$($script:Version) listing SDDL backups"
+        $backups = @(Get-AdapterBackupRecord -Guid $Guid)
+        if ($backups.Count -eq 0) {
+            Write-AppLog 'No SDDL backups found' 'WARN'
+            exit 1
+        }
+        $backups | Select-Object Guid, Stack, Timestamp, LastWriteTime, FileName, Path | Format-Table -AutoSize
+        exit 0
+    }
     if ($RestoreBackup) {
         Write-AppLog "AdapterLock v$($script:Version) restoring latest SDDL backup"
+        if (-not $Guid -and $BackupFile) {
+            $backupRecord = @(Get-AdapterBackupRecord -BackupFile $BackupFile | Select-Object -First 1)
+            if ($backupRecord.Count -gt 0) { $Guid = $backupRecord[0].Guid }
+        }
         if (-not $Guid) {
             Write-AppLog 'Specify -Guid <guid> with -RestoreBackup' 'ERROR'
             exit 2
         }
         $target = Find-AdapterByIdentifier -ByGuid $Guid
         $name = if ($target) { $target.Name } else { $Guid }
-        $ok = Restore-AdapterSddl -Guid $Guid -Name $name
+        $ok = Restore-AdapterSddl -Guid $Guid -Name $name -BackupFile $BackupFile
         if ($ok) { exit 0 } else { exit 1 }
     }
     if ($LoadPolicy) {
@@ -1687,7 +1830,7 @@ if ($script:IsCli) {
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="AdapterLock" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-                        <TextBlock x:Name="VersionText" Text=" v0.8.3" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
+                        <TextBlock x:Name="VersionText" Text=" v0.8.4" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
                     </StackPanel>
                     <TextBlock Margin="0,6,24,0"
                                Text="Protect static NIC configuration with adapter-specific registry ACL enforcement. Select adapters, review state, and apply lock policies without changing unrelated interfaces."
@@ -2198,6 +2341,112 @@ function Confirm-AdapterOperation {
         -Tone 'Warning'
 }
 
+function Show-BackupSelectionDialog {
+    param($Row)
+
+    $backups = @(Get-AdapterBackupRecord -Guid $Row.Guid)
+    if ($backups.Count -eq 0) {
+        $script:StatusText.Text = "No SDDL backups found for $($Row.Name)."
+        Write-AppLog "No SDDL backups found for $($Row.Name) ($($Row.Guid))" 'WARN'
+        return $null
+    }
+
+    $dlg = New-Object System.Windows.Window
+    $dlg.Title = 'Restore adapter ACL backup'
+    $dlg.Owner = $window
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.SizeToContent = 'WidthAndHeight'
+    $dlg.Background = Get-CMBrush '#FF1E1E2E'
+    $dlg.Foreground = Get-CMBrush '#FFCDD6F4'
+    $dlg.FontFamily = 'Segoe UI'
+
+    $panel = New-Object System.Windows.Controls.StackPanel
+    $panel.Margin = [System.Windows.Thickness]::new(22)
+    $panel.Width = 720
+
+    $heading = New-Object System.Windows.Controls.TextBlock
+    $heading.Text = "Choose backup for $($Row.Name)"
+    $heading.FontSize = 18
+    $heading.FontWeight = 'SemiBold'
+    $heading.Foreground = Get-CMBrush '#FFCDD6F4'
+    $heading.Margin = [System.Windows.Thickness]::new(0,0,0,6)
+    $panel.Children.Add($heading) | Out-Null
+
+    $body = New-Object System.Windows.Controls.TextBlock
+    $body.Text = 'Restore applies the selected SDDL file to its matching registry stack key.'
+    $body.TextWrapping = 'Wrap'
+    $body.Foreground = Get-CMBrush '#FFA6ADC8'
+    $body.Margin = [System.Windows.Thickness]::new(0,0,0,14)
+    $panel.Children.Add($body) | Out-Null
+
+    $grid = New-Object System.Windows.Controls.DataGrid
+    $grid.AutoGenerateColumns = $false
+    $grid.IsReadOnly = $true
+    $grid.SelectionMode = 'Single'
+    $grid.HeadersVisibility = 'Column'
+    $grid.MinHeight = 220
+    $grid.MaxHeight = 280
+    $grid.Background = Get-CMBrush '#FF11111B'
+    $grid.Foreground = Get-CMBrush '#FFCDD6F4'
+    $grid.RowBackground = Get-CMBrush '#FF181825'
+    $grid.AlternatingRowBackground = Get-CMBrush '#FF1E1E2E'
+    $grid.GridLinesVisibility = 'None'
+    $grid.BorderBrush = Get-CMBrush '#FF45475A'
+    $grid.BorderThickness = [System.Windows.Thickness]::new(1)
+    $grid.Margin = [System.Windows.Thickness]::new(0,0,0,16)
+
+    foreach ($columnSpec in @(
+        @{ Header = 'Stack'; Binding = 'Stack'; Width = 82 },
+        @{ Header = 'Timestamp'; Binding = 'Timestamp'; Width = 142 },
+        @{ Header = 'Saved'; Binding = 'LastWriteTime'; Width = 170 },
+        @{ Header = 'File'; Binding = 'FileName'; Width = 300 }
+    )) {
+        $col = New-Object System.Windows.Controls.DataGridTextColumn
+        $col.Header = $columnSpec.Header
+        $col.Binding = New-Object System.Windows.Data.Binding($columnSpec.Binding)
+        $col.Width = $columnSpec.Width
+        $grid.Columns.Add($col) | Out-Null
+    }
+
+    $grid.ItemsSource = $backups
+    $grid.SelectedIndex = 0
+    $panel.Children.Add($grid) | Out-Null
+
+    $buttons = New-Object System.Windows.Controls.StackPanel
+    $buttons.Orientation = 'Horizontal'
+    $buttons.HorizontalAlignment = 'Right'
+
+    $cancel = New-Object System.Windows.Controls.Button
+    $cancel.Content = 'Cancel'
+    $cancel.MinWidth = 96
+    $cancel.Padding = [System.Windows.Thickness]::new(14,8,14,8)
+    $cancel.Margin = [System.Windows.Thickness]::new(0,0,8,0)
+
+    $restore = New-Object System.Windows.Controls.Button
+    $restore.Content = 'Restore selected'
+    $restore.MinWidth = 132
+    $restore.Padding = [System.Windows.Thickness]::new(14,8,14,8)
+
+    $dlg.Tag = $null
+    $cancel.Add_Click({ $dlg.DialogResult = $false; $dlg.Close() })
+    $restore.Add_Click({
+        if ($grid.SelectedItem) {
+            $dlg.Tag = $grid.SelectedItem.Path
+            $dlg.DialogResult = $true
+            $dlg.Close()
+        }
+    })
+
+    $buttons.Children.Add($cancel) | Out-Null
+    $buttons.Children.Add($restore) | Out-Null
+    $panel.Children.Add($buttons) | Out-Null
+    $dlg.Content = $panel
+
+    [void]$dlg.ShowDialog()
+    return [string]$dlg.Tag
+}
+
 $ctxMenu = New-Object System.Windows.Controls.ContextMenu
 $ctxMenu.Background      = Get-CMBrush '#FF181825'
 $ctxMenu.Foreground      = Get-CMBrush '#FFCDD6F4'
@@ -2267,8 +2516,15 @@ $ctxUnlock.Add_Click({
 })
 $ctxRestore.Add_Click({
     $row = $script:RightClickedRow
-    if ($row -and (Confirm-AdapterOperation -Action 'Restore' -Row $row)) {
-        Invoke-AdapterOperationWorker -Action 'Restore' -Rows @($row)
+    if ($row) {
+        $backupPath = Show-BackupSelectionDialog -Row $row
+        if ($backupPath) {
+            Invoke-AdapterOperationWorker -Action 'Restore' -Rows @([pscustomobject]@{
+                Name = $row.Name
+                Guid = $row.Guid
+                BackupFile = $backupPath
+            })
+        }
     }
 })
 $ctxNcpa.Add_Click({
@@ -2316,6 +2572,11 @@ function Get-UiWorkerScript {
         'Get-AdapterDhcpState',
         'Get-BackupKeyTag',
         'Save-AdapterSddl',
+        'ConvertFrom-AdapterBackupFile',
+        'Resolve-BackupFile',
+        'Get-AdapterBackupRecord',
+        'Get-BackupRestorePath',
+        'Invoke-SddlRestore',
         'Restore-AdapterSddl',
         'Test-AdapterLockedDetailed',
         'Get-LockBadgeFromDetail',
@@ -2465,6 +2726,7 @@ function Invoke-AdapterOperationWorker {
         [pscustomobject]@{
             Name = $_.Name
             Guid = $_.Guid
+            BackupFile = $_.BackupFile
         }
     })
     if ($items.Count -eq 0) { return }
@@ -2479,7 +2741,7 @@ function Invoke-AdapterOperationWorker {
                 $ok = switch ($WorkerArgument.Action) {
                     'Lock'    { Lock-Adapter -Guid $row.Guid -Name $row.Name }
                     'Unlock'  { Unlock-Adapter -Guid $row.Guid -Name $row.Name }
-                    'Restore' { Restore-AdapterSddl -Guid $row.Guid -Name $row.Name }
+                    'Restore' { Restore-AdapterSddl -Guid $row.Guid -Name $row.Name -BackupFile $row.BackupFile }
                 }
                 $results += [pscustomobject]@{
                     Name = $row.Name

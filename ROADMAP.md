@@ -6,13 +6,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
 
 ### P1
 
-- [ ] P1 -- Add backup inventory and exact restore selection
-  Why: Restore currently chooses the latest matching SDDL backup per key, which is not enough for rollback after repeated lock/unlock attempts.
-  Evidence: `AdapterLock.ps1:560`, `AdapterLock.ps1:574`, `README.md:141`.
-  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
-  Acceptance: CLI exposes `-ListBackups` and exact backup selection, GUI restore shows timestamp/key/source choices before applying, and tests cover latest and explicit restore paths.
-  Complexity: M
-
 - [ ] P1 -- Ship an enterprise deployment kit without requiring credentials
   Why: The target users deploy through Intune, SCCM, GPO startup scripts, and RMMs, but the repo has no ready detection/remediation package or task XML.
   Evidence: `README.md:79`, `README.md:115`, Microsoft Intune Remediations, PDQ/NinjaOne deployment docs.
