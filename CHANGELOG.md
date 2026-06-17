@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.2 - 2026-06-17
+
+### Changed
+- **Responsive WPF operations** -- adapter refresh, lock, unlock, restore, and policy apply now run through background workers with busy-state controls and Dispatcher-marshaled UI updates.
+
 ## v0.8.1 - 2026-06-17
 
 ### Added

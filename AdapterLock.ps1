@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.8.1
+.VERSION 0.8.2
 .GUID fd499ba1-8ce6-4512-877e-9dede49777f5
 .AUTHOR SysAdminDoc
 .DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
@@ -7,7 +7,7 @@
 .TAGS networking adapter lock registry ACL IP security PACS
 .LICENSEURI https://github.com/SysAdminDoc/AdapterLock/blob/master/LICENSE
 .PROJECTURI https://github.com/SysAdminDoc/AdapterLock
-.RELEASENOTES Hardens policy application, WMI drift coverage, report encoding, and remediation exit semantics.
+.RELEASENOTES Runs WPF scan and write operations through background workers to keep the UI responsive.
 #>
 
 <#
@@ -198,7 +198,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.8.1'
+$script:Version   = '0.8.2'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -1614,7 +1614,7 @@ if ($script:IsCli) {
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="AdapterLock" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-                        <TextBlock x:Name="VersionText" Text=" v0.8.1" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
+                        <TextBlock x:Name="VersionText" Text=" v0.8.2" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
                     </StackPanel>
                     <TextBlock Margin="0,6,24,0"
                                Text="Protect static NIC configuration with adapter-specific registry ACL enforcement. Select adapters, review state, and apply lock policies without changing unrelated interfaces."
@@ -1855,6 +1855,8 @@ $script:SkipActionConfirm = $false
 $script:AllRows     = $null
 $script:SearchPlaceholder = 'Search adapters...'
 $script:LastAdapterScanError = $null
+$script:UiBusy = $false
+$script:PendingStatusText = ''
 
 $LockBtn     = $window.FindName('LockBtn')
 $UnlockBtn   = $window.FindName('UnlockBtn')
@@ -1903,6 +1905,12 @@ function Show-SummaryState {
 
 function Show-SelectionState {
     if (-not $script:AdapterGrid) { return }
+    if ($script:UiBusy) {
+        $LockBtn.IsEnabled = $false
+        $UnlockBtn.IsEnabled = $false
+        if ($script:SelectionSummaryText) { $script:SelectionSummaryText.Text = 'Working...' }
+        return
+    }
     $count = @($script:AdapterGrid.SelectedItems).Count
     $hasSelection = $count -gt 0
     $LockBtn.IsEnabled = $hasSelection
@@ -2175,22 +2183,19 @@ $ctxMenu.Add_Opening({
 $ctxLock.Add_Click({
     $row = $script:RightClickedRow
     if ($row -and (Confirm-AdapterOperation -Action 'Lock' -Row $row)) {
-        [void](Lock-Adapter -Guid $row.Guid -Name $row.Name)
-        Show-AdapterGrid
+        Invoke-AdapterOperationWorker -Action 'Lock' -Rows @($row)
     }
 })
 $ctxUnlock.Add_Click({
     $row = $script:RightClickedRow
     if ($row -and (Confirm-AdapterOperation -Action 'Unlock' -Row $row)) {
-        [void](Unlock-Adapter -Guid $row.Guid -Name $row.Name)
-        Show-AdapterGrid
+        Invoke-AdapterOperationWorker -Action 'Unlock' -Rows @($row)
     }
 })
 $ctxRestore.Add_Click({
     $row = $script:RightClickedRow
     if ($row -and (Confirm-AdapterOperation -Action 'Restore' -Row $row)) {
-        [void](Restore-AdapterSddl -Guid $row.Guid -Name $row.Name)
-        Show-AdapterGrid
+        Invoke-AdapterOperationWorker -Action 'Restore' -Rows @($row)
     }
 })
 $ctxNcpa.Add_Click({
@@ -2211,30 +2216,264 @@ $ctxCopyGuid.Add_Click({
     }
 })
 
+function ConvertTo-WorkerLiteral {
+    param([string]$Value)
+    if ($null -eq $Value) { return "''" }
+    return "'" + ($Value -replace "'", "''") + "'"
+}
+
+function Get-UiWorkerScript {
+    param([scriptblock]$Work)
+
+    $functionNames = @(
+        'Write-AppLog',
+        'Write-EvtLog',
+        'Get-NicType',
+        'Get-NicTypeGlyph',
+        'Get-RegistryLastWrite',
+        'ConvertTo-ReportHtml',
+        'ConvertTo-PolicyGuid',
+        'ConvertTo-PolicyMac',
+        'Get-PolicyIdentifierKey',
+        'Export-LockPolicy',
+        'Import-LockPolicy',
+        'Get-LockPolicySummary',
+        'Invoke-LockPolicy',
+        'Get-InterfaceKeyPath',
+        'Get-AdapterDhcpState',
+        'Get-BackupKeyTag',
+        'Save-AdapterSddl',
+        'Restore-AdapterSddl',
+        'Test-AdapterLockedDetailed',
+        'Get-LockBadgeFromDetail',
+        'Get-LockDetailText',
+        'Test-AdapterLocked',
+        'Lock-Adapter',
+        'Unlock-Adapter',
+        'Get-AdapterRow',
+        'Find-AdapterByIdentifier'
+    )
+
+    $functionSource = foreach ($name in $functionNames) {
+        $cmd = Get-Command -Name $name -CommandType Function -ErrorAction Stop
+        "function $name {`r`n$($cmd.Definition)`r`n}"
+    }
+
+    $bootstrap = @"
+`$ErrorActionPreference = 'Stop'
+`$script:IsCli = `$false
+`$script:IsDryRun = `$false
+`$script:Version = $(ConvertTo-WorkerLiteral $script:Version)
+`$script:LogPath = $(ConvertTo-WorkerLiteral $script:LogPath)
+`$script:BackupDir = $(ConvertTo-WorkerLiteral $script:BackupDir)
+`$script:LastAdapterScanError = `$null
+"@
+
+    return @"
+param(`$WorkerArgument)
+$bootstrap
+$($functionSource -join "`r`n")
+$($Work.ToString())
+"@
+}
+
+function Show-UiBusyState {
+    param(
+        [bool]$Busy,
+        [string]$Message = ''
+    )
+
+    $script:UiBusy = $Busy
+    if ($Message) { $script:StatusText.Text = $Message }
+    $RefreshBtn.IsEnabled = -not $Busy
+    $SavePolicyBtn.IsEnabled = -not $Busy
+    $LoadPolicyBtn.IsEnabled = -not $Busy
+    $ToggleHiddenBtn.IsEnabled = -not $Busy
+    $OpenNcpaBtn.IsEnabled = -not $Busy
+    $OpenLogBtn.IsEnabled = -not $Busy
+    if ($script:AdapterGrid) { $script:AdapterGrid.IsEnabled = -not $Busy }
+    if ($Busy) {
+        $LockBtn.IsEnabled = $false
+        $UnlockBtn.IsEnabled = $false
+        $ctxLock.IsEnabled = $false
+        $ctxUnlock.IsEnabled = $false
+        $ctxRestore.IsEnabled = $false
+        $window.Cursor = [System.Windows.Input.Cursors]::Wait
+    } else {
+        $ctxRestore.IsEnabled = $true
+        $window.Cursor = $null
+        Show-SelectionState
+    }
+}
+
+function Invoke-UiWorker {
+    param(
+        [string]$Name,
+        [string]$Status,
+        [scriptblock]$Work,
+        [object]$Argument,
+        [scriptblock]$OnSuccess
+    )
+
+    if ($script:UiBusy) {
+        $script:StatusText.Text = 'Another AdapterLock operation is already running.'
+        return
+    }
+
+    $successHandler = $OnSuccess
+    Show-UiBusyState -Busy $true -Message $Status
+    $ps = [PowerShell]::Create()
+    try {
+        [void]$ps.AddScript((Get-UiWorkerScript -Work $Work)).AddArgument($Argument)
+        $async = $ps.BeginInvoke()
+    } catch {
+        $ps.Dispose()
+        Show-UiBusyState -Busy $false
+        Write-AppLog "$Name failed to start: $($_.Exception.Message)" 'ERROR'
+        $script:StatusText.Text = "$Name failed to start. See the activity log."
+        return
+    }
+
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(150)
+    $timer.Add_Tick({
+        if (-not $async.IsCompleted) { return }
+        $timer.Stop()
+        try {
+            $raw = @($ps.EndInvoke($async))
+            if ($ps.Streams.Error.Count -gt 0) {
+                throw $ps.Streams.Error[0].Exception
+            }
+            $result = if ($raw.Count -eq 1) { $raw[0] } else { $raw }
+            Show-UiBusyState -Busy $false
+            if ($successHandler) { & $successHandler $result }
+        } catch {
+            Show-UiBusyState -Busy $false
+            Write-AppLog "$Name failed: $($_.Exception.Message)" 'ERROR'
+            $script:StatusText.Text = "$Name failed. See the activity log."
+        } finally {
+            $ps.Dispose()
+        }
+    })
+    $timer.Start()
+}
+
+function Show-AdapterGridResult {
+    param($Result)
+
+    $rows = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+    foreach ($row in @($Result.Rows)) {
+        $rows.Add($row) | Out-Null
+    }
+    $script:AllRows = $rows
+    $script:LastAdapterScanError = [string]$Result.Error
+    Show-SummaryState
+    Show-AdapterFilter
+    $locked  = @($script:AllRows | Where-Object { $_.LockBadge -eq 'LOCKED' }).Count
+    $partial = @($script:AllRows | Where-Object { $_.LockBadge -eq 'PARTIAL' }).Count
+    $msg     = "Loaded $($script:AllRows.Count) adapter(s). $locked locked"
+    if ($partial -gt 0) { $msg += " ($partial partial)" }
+    if ($script:LastAdapterScanError) { $msg = 'Adapter scan failed. See the activity log for details' }
+    if ($script:PendingStatusText) {
+        $msg = $script:PendingStatusText
+        $script:PendingStatusText = ''
+    }
+    $script:StatusText.Text = $msg + '.'
+    Write-AppLog "Refresh: $($script:AllRows.Count) adapters, $locked locked, $partial partial"
+}
+
+function Invoke-AdapterOperationWorker {
+    param(
+        [ValidateSet('Lock','Unlock','Restore')][string]$Action,
+        [object[]]$Rows
+    )
+
+    $items = @($Rows | ForEach-Object {
+        [pscustomobject]@{
+            Name = $_.Name
+            Guid = $_.Guid
+        }
+    })
+    if ($items.Count -eq 0) { return }
+
+    Invoke-UiWorker `
+        -Name "$Action adapter" `
+        -Status "$Action operation running..." `
+        -Argument ([pscustomobject]@{ Action = $Action; Rows = $items }) `
+        -Work {
+            $results = @()
+            foreach ($row in @($WorkerArgument.Rows)) {
+                $ok = switch ($WorkerArgument.Action) {
+                    'Lock'    { Lock-Adapter -Guid $row.Guid -Name $row.Name }
+                    'Unlock'  { Unlock-Adapter -Guid $row.Guid -Name $row.Name }
+                    'Restore' { Restore-AdapterSddl -Guid $row.Guid -Name $row.Name }
+                }
+                $results += [pscustomobject]@{
+                    Name = $row.Name
+                    Guid = $row.Guid
+                    Action = $WorkerArgument.Action
+                    Success = [bool]$ok
+                }
+            }
+            [pscustomobject]@{ Results = $results }
+        } `
+        -OnSuccess {
+            param($Result)
+            $results = @($Result.Results)
+            $okCount = @($results | Where-Object { $_.Success }).Count
+            $failCount = $results.Count - $okCount
+            $script:PendingStatusText = "$Action complete: $okCount succeeded, $failCount failed"
+            Show-AdapterGrid
+        }
+}
+
+function Invoke-PolicyApplyWorker {
+    param([string]$Path)
+
+    Invoke-UiWorker `
+        -Name 'Apply policy' `
+        -Status 'Applying policy...' `
+        -Argument ([pscustomobject]@{ Path = $Path }) `
+        -Work {
+            $policy = @(Import-LockPolicy -Path $WorkerArgument.Path)
+            if ($policy.Count -eq 0) {
+                [pscustomobject]@{ Success = $false; Summary = 'Failed to load policy'; Results = @() }
+                return
+            }
+            $policyResults = @(Invoke-LockPolicy -Policy $policy)
+            [pscustomobject]@{
+                Success = $true
+                Summary = (Get-LockPolicySummary -Results $policyResults)
+                Results = $policyResults
+            }
+        } `
+        -OnSuccess {
+            param($Result)
+            $script:PendingStatusText = $Result.Summary
+            Show-AdapterGrid
+        }
+}
+
 # --- Grid helpers ---
 function Show-AdapterGrid {
     $script:StatusText.Text = 'Scanning adapters...'
     Show-EmptyState -Title 'Scanning adapters' -Body 'AdapterLock is reading network adapter state and registry ACLs.' -Hint 'This usually completes in a few seconds.' -Visible
-    $RefreshBtn.IsEnabled = $false
-    $window.Cursor = [System.Windows.Input.Cursors]::Wait
-    $script:LastAdapterScanError = $null
-    try {
-        $window.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
-        $script:AllRows = Get-AdapterRow -ShowHidden:$script:ShowHidden
-        Show-SummaryState
-        Show-AdapterFilter
-        $locked  = @($script:AllRows | Where-Object { $_.LockBadge -eq 'LOCKED' }).Count
-        $partial = @($script:AllRows | Where-Object { $_.LockBadge -eq 'PARTIAL' }).Count
-        $msg     = "Loaded $($script:AllRows.Count) adapter(s). $locked locked"
-        if ($partial -gt 0) { $msg += " ($partial partial)" }
-        if ($script:LastAdapterScanError) { $msg = 'Adapter scan failed. See the activity log for details' }
-        $script:StatusText.Text = $msg + '.'
-        Write-AppLog "Refresh: $($script:AllRows.Count) adapters, $locked locked, $partial partial"
-    } finally {
-        $RefreshBtn.IsEnabled = $true
-        $window.Cursor = $null
-        Show-SelectionState
-    }
+    Invoke-UiWorker `
+        -Name 'Refresh adapters' `
+        -Status 'Scanning adapters...' `
+        -Argument ([pscustomobject]@{ ShowHidden = [bool]$script:ShowHidden }) `
+        -Work {
+            $script:LastAdapterScanError = $null
+            $rows = @(Get-AdapterRow -ShowHidden:([bool]$WorkerArgument.ShowHidden))
+            [pscustomobject]@{
+                Rows = $rows
+                Error = $script:LastAdapterScanError
+            }
+        } `
+        -OnSuccess {
+            param($Result)
+            Show-AdapterGridResult -Result $Result
+        }
 }
 
 function Show-AdapterFilter {
@@ -2288,18 +2527,19 @@ function Invoke-SelectedAdapterAction {
         $script:StatusText.Text = 'Select one or more adapters first.'
         return
     }
+    $confirmed = @()
     foreach ($row in $sel) {
         if (-not (Confirm-AdapterOperation -Action $Action -Row $row)) {
             Write-AppLog "$Action cancelled for $($row.Name) ($($row.Guid))" 'INFO'
             continue
         }
-        if ($Action -eq 'Lock') {
-            [void](Lock-Adapter   -Guid $row.Guid -Name $row.Name)
-        } else {
-            [void](Unlock-Adapter -Guid $row.Guid -Name $row.Name)
-        }
+        $confirmed += $row
     }
-    Show-AdapterGrid
+    if ($confirmed.Count -eq 0) {
+        $script:StatusText.Text = 'No adapter changes were selected.'
+        return
+    }
+    Invoke-AdapterOperationWorker -Action $Action -Rows $confirmed
 }
 
 $LockBtn.Add_Click({     Invoke-SelectedAdapterAction -Action 'Lock' })
@@ -2338,15 +2578,7 @@ $LoadPolicyBtn.Add_Click({
     $dlg.Filter = 'JSON files (*.json)|*.json'
     $dlg.InitialDirectory = $env:ProgramData
     if ($dlg.ShowDialog() -eq 'OK') {
-        $policy = Import-LockPolicy -Path $dlg.FileName
-        if ($policy.Count -gt 0) {
-            $policyResults = @(Invoke-LockPolicy -Policy $policy)
-            $summary = Get-LockPolicySummary -Results $policyResults
-            Show-AdapterGrid
-            $script:StatusText.Text = $summary
-        } else {
-            $script:StatusText.Text = 'Failed to load policy.'
-        }
+        Invoke-PolicyApplyWorker -Path $dlg.FileName
     }
 })
 $OpenNcpaBtn.Add_Click({ try { Start-Process 'ncpa.cpl' } catch { Write-AppLog "ncpa open failed: $($_.Exception.Message)" 'ERROR' } })

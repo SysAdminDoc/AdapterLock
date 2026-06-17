@@ -6,13 +6,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
 
 ### P1
 
-- [ ] P1 -- Move WPF scan and lock operations to background workers
-  Why: Adapter scanning and ACL writes run synchronously on the WPF UI thread and can freeze the window on slow registry/WMI paths.
-  Evidence: `AdapterLock.ps1:1999`, `AdapterLock.ps1:2007`, `AdapterLock.ps1:2075`; WPF threading model guidance.
-  Touches: `AdapterLock.ps1`.
-  Acceptance: refresh, lock, unlock, apply-policy, and restore disable relevant controls, show progress/status, keep the window responsive, marshal UI updates through Dispatcher, and leave no stuck busy state after errors.
-  Complexity: L
-
 - [ ] P1 -- Add machine-readable fleet query and report outputs
   Why: RMM, SIEM, Intune, and automation tools need JSON/CSV output instead of only `Format-Table` or HTML.
   Evidence: `AdapterLock.ps1:1105`, `AdapterLock.ps1:1113`, `AdapterLock.ps1:1116`; PDQ/NinjaOne/Intune reporting patterns.

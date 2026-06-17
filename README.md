@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.8.1-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.8.2-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -57,6 +57,8 @@ The registry ACL technique is the real solution and what this tool automates.
 5. Lock state is verified by re-reading the ACL and shown in the `Lock` column
 6. Use the search summary, lock counters, and empty states to confirm what is currently visible
 7. Click **Show Hidden** to reveal unplugged/ghost adapters (shown with "(hidden)" label)
+
+Adapter scans, lock/unlock, restore, and policy-apply operations run in the background so the window stays responsive while registry and network adapter state is refreshed.
 
 The `Mode` column shows whether the adapter is DHCP or Static. Locking a DHCP adapter shows a warning because lease renewals may be blocked from updating registry values.
 
@@ -168,4 +170,4 @@ Invoke-ScriptAnalyzer -Path .\AdapterLock.ps1 -Severity Error,Warning
 
 ## Version
 
-v0.8.1
+v0.8.2

@@ -185,16 +185,16 @@ Describe 'AdapterLock core functions' {
         Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
 
         $badStatePath = Join-Path $TestDrive 'bad-state.json'
-        @{ Version = '0.8.1'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @{ Version = '0.8.2'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
         @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
 
         $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
-        @{ Version = '0.8.1'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @{ Version = '0.8.2'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
         @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
 
         $duplicatePath = Join-Path $TestDrive 'duplicate.json'
         @{
-            Version = '0.8.1'
+            Version = '0.8.2'
             Adapters = @(
                 @{ Name = 'Ethernet'; State = 'locked' }
                 @{ Name = 'Ethernet'; State = 'locked' }
@@ -419,6 +419,49 @@ Describe 'AdapterLock core functions' {
         $result | Should -Be $false
         Should -Invoke -CommandName New-ScheduledTaskAction -Times 0
         Should -Invoke -CommandName Register-ScheduledTask -Times 0
+    }
+
+    It 'builds parseable background worker scripts for WPF operations' {
+        Import-AdapterLockFunction -Name `
+            'ConvertTo-WorkerLiteral',
+            'Get-UiWorkerScript',
+            'Write-AppLog',
+            'Write-EvtLog',
+            'Get-NicType',
+            'Get-NicTypeGlyph',
+            'Get-RegistryLastWrite',
+            'ConvertTo-ReportHtml',
+            'ConvertTo-PolicyGuid',
+            'ConvertTo-PolicyMac',
+            'Get-PolicyIdentifierKey',
+            'Export-LockPolicy',
+            'Import-LockPolicy',
+            'Get-LockPolicySummary',
+            'Invoke-LockPolicy',
+            'Get-InterfaceKeyPath',
+            'Get-AdapterDhcpState',
+            'Get-BackupKeyTag',
+            'Save-AdapterSddl',
+            'Restore-AdapterSddl',
+            'Test-AdapterLockedDetailed',
+            'Get-LockBadgeFromDetail',
+            'Get-LockDetailText',
+            'Test-AdapterLocked',
+            'Lock-Adapter',
+            'Unlock-Adapter',
+            'Get-AdapterRow',
+            'Find-AdapterByIdentifier'
+        $script:Version = 'test'
+        $script:LogPath = Join-Path $TestDrive 'adapterlock.log'
+        $script:BackupDir = Join-Path $TestDrive 'Backups'
+
+        $worker = Get-UiWorkerScript -Work { [pscustomobject]@{ Ok = $true } }
+        $tokens = $null
+        $errors = $null
+        [System.Management.Automation.Language.Parser]::ParseInput($worker, [ref]$tokens, [ref]$errors) | Out-Null
+
+        $errors.Count | Should -Be 0
+        $worker | Should -Match 'param\(\$WorkerArgument\)'
     }
 
     It 'classifies NIC types' {
