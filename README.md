@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.8.2-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.8.3-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -117,6 +117,10 @@ Changes take effect immediately — no reboot, no service restart.
 # Query lock state on remote hosts (requires PS remoting)
 .\AdapterLock.ps1 -Query -ComputerName host1,host2,host3 -Silent
 
+# Query with machine-readable output for RMM/SIEM tooling
+.\AdapterLock.ps1 -Query -ComputerName host1,host2 -OutputFormat Json -Silent
+.\AdapterLock.ps1 -Query -ComputerName host1,host2 -OutputFormat Csv -OutputFile query.csv -Silent
+
 # Install WMI drift watcher (logs EventId 1002 on Tcpip, Tcpip6, and NetBT registry tree changes)
 .\AdapterLock.ps1 -InstallWatcher
 
@@ -125,6 +129,10 @@ Changes take effect immediately — no reboot, no service restart.
 
 # Generate HTML fleet report
 .\AdapterLock.ps1 -Report -ComputerName (Get-Content hosts.txt) -OutputFile report.html
+
+# Generate machine-readable fleet reports
+.\AdapterLock.ps1 -Report -ComputerName (Get-Content hosts.txt) -OutputFormat Json -OutputFile report.json
+.\AdapterLock.ps1 -Report -ComputerName (Get-Content hosts.txt) -OutputFormat Csv -OutputFile report.csv
 ```
 
 Exit codes: `0` = success, `1` = adapter not found / operation failed / drift still detected after remediation, `2` = bad arguments.
@@ -170,4 +178,4 @@ Invoke-ScriptAnalyzer -Path .\AdapterLock.ps1 -Severity Error,Warning
 
 ## Version
 
-v0.8.2
+v0.8.3

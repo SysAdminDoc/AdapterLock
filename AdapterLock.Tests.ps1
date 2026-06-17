@@ -185,16 +185,16 @@ Describe 'AdapterLock core functions' {
         Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
 
         $badStatePath = Join-Path $TestDrive 'bad-state.json'
-        @{ Version = '0.8.2'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @{ Version = '0.8.3'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
         @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
 
         $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
-        @{ Version = '0.8.2'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @{ Version = '0.8.3'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
         @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
 
         $duplicatePath = Join-Path $TestDrive 'duplicate.json'
         @{
-            Version = '0.8.2'
+            Version = '0.8.3'
             Adapters = @(
                 @{ Name = 'Ethernet'; State = 'locked' }
                 @{ Name = 'Ethernet'; State = 'locked' }
@@ -373,6 +373,50 @@ Describe 'AdapterLock core functions' {
         $html | Should -Match 'Ethernet &quot;PACS&quot;'
         $html | Should -Match '&lt;open&gt;&amp;drift'
         $html | Should -Not -Match '<script>'
+    }
+
+    It 'emits stable JSON and CSV fleet output records' {
+        Import-AdapterLockFunction -Name 'Export-LockData', 'Select-LockOutputRecord'
+        $data = @(
+            [pscustomobject]@{
+                Computer = 'HOST1'
+                Adapter = 'Ethernet'
+                GUID = '{aaa}'
+                Locked = 'LOCKED'
+                Detail = 'Locked: IPv4'
+                Mode = 'Static'
+                Extra = 'ignored'
+            }
+        )
+
+        $json = Export-LockData -Data $data -Format Json
+        $parsed = $json | ConvertFrom-Json
+        $parsed[0].Computer | Should -Be 'HOST1'
+        $parsed[0].PSObject.Properties.Name | Should -Contain 'Mode'
+        $parsed[0].PSObject.Properties.Name | Should -Not -Contain 'Extra'
+
+        $csv = Export-LockData -Data $data -Format Csv
+        ($csv -join "`n") | Should -Match '"Computer","Adapter","GUID","Locked","Detail","Mode"'
+    }
+
+    It 'keeps usable remote query rows when one host fails' {
+        Import-AdapterLockFunction -Name 'Invoke-RemoteLockQuery'
+        Mock -CommandName Invoke-Command -MockWith {
+            if ($ComputerName -eq 'bad-host') { throw 'offline' }
+            [pscustomobject]@{
+                Computer = $ComputerName
+                Adapter = 'Ethernet'
+                GUID = '{aaa}'
+                Locked = 'LOCKED'
+                Detail = 'Locked: IPv4'
+                Mode = 'Static'
+            }
+        }
+
+        $results = @(Invoke-RemoteLockQuery -Targets @('good-host', 'bad-host'))
+
+        $results.Count | Should -Be 1
+        $results[0].Computer | Should -Be 'good-host'
     }
 
     It 'defines WMI tree watchers for every enforced registry surface' {

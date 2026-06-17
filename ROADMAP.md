@@ -6,13 +6,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
 
 ### P1
 
-- [ ] P1 -- Add machine-readable fleet query and report outputs
-  Why: RMM, SIEM, Intune, and automation tools need JSON/CSV output instead of only `Format-Table` or HTML.
-  Evidence: `AdapterLock.ps1:1105`, `AdapterLock.ps1:1113`, `AdapterLock.ps1:1116`; PDQ/NinjaOne/Intune reporting patterns.
-  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
-  Acceptance: `-Query` and `-Report` can emit JSON and CSV with stable fields, preserve HTML as default report format, return non-zero on unreachable hosts only when no usable results exist, and document examples.
-  Complexity: M
-
 - [ ] P1 -- Add backup inventory and exact restore selection
   Why: Restore currently chooses the latest matching SDDL backup per key, which is not enough for rollback after repeated lock/unlock attempts.
   Evidence: `AdapterLock.ps1:560`, `AdapterLock.ps1:574`, `README.md:141`.

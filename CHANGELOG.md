@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.3 - 2026-06-17
+
+### Added
+- **Machine-readable fleet output** -- `-Query` and `-Report` now support `-OutputFormat Json` and `-OutputFormat Csv`, with stable `Computer`, `Adapter`, `GUID`, `Locked`, `Detail`, and `Mode` fields.
+
+### Fixed
+- **Partial remote-query resilience** -- remote fleet query now gathers usable rows per host and only returns no data when every queried host fails.
+
 ## v0.8.2 - 2026-06-17
 
 ### Changed

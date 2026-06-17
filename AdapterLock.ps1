@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.8.2
+.VERSION 0.8.3
 .GUID fd499ba1-8ce6-4512-877e-9dede49777f5
 .AUTHOR SysAdminDoc
 .DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
@@ -7,7 +7,7 @@
 .TAGS networking adapter lock registry ACL IP security PACS
 .LICENSEURI https://github.com/SysAdminDoc/AdapterLock/blob/master/LICENSE
 .PROJECTURI https://github.com/SysAdminDoc/AdapterLock
-.RELEASENOTES Runs WPF scan and write operations through background workers to keep the UI responsive.
+.RELEASENOTES Adds JSON and CSV fleet output for query and report automation.
 #>
 
 <#
@@ -87,6 +87,9 @@
 .PARAMETER OutputFile
     Path for the HTML report file. Defaults to adapterlock-report-{timestamp}.html in the current directory.
 
+.PARAMETER OutputFormat
+    Output format for -Query or -Report. Query defaults to Table; Report defaults to Html. Json and Csv are machine-readable.
+
 .EXAMPLE
     .\AdapterLock.ps1
     Launch the WPF GUI for interactive lock/unlock.
@@ -136,7 +139,9 @@ param(
     [switch]$InstallWatcher,
     [switch]$UninstallWatcher,
     [switch]$Report,
-    [string]$OutputFile
+    [string]$OutputFile,
+    [ValidateSet('Table','Json','Csv','Html')]
+    [string]$OutputFormat
 )
 
 
@@ -198,7 +203,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.8.2'
+$script:Version   = '0.8.3'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -1111,13 +1116,67 @@ function Invoke-RemoteLockQuery {
     }
 
     Write-AppLog "Querying $($Targets.Count) remote host(s)..." 'INFO'
-    try {
-        $raw = Invoke-Command -ComputerName $Targets -ScriptBlock $queryBlock -ErrorAction Stop
-        return $raw | Select-Object Computer, Adapter, GUID, Locked, Detail, Mode
-    } catch {
-        Write-AppLog "Remote query failed: $($_.Exception.Message)" 'ERROR'
-        return @()
+    $results = @()
+    foreach ($target in $Targets) {
+        try {
+            $raw = Invoke-Command -ComputerName $target -ScriptBlock $queryBlock -ErrorAction Stop
+            $results += @($raw | Select-Object Computer, Adapter, GUID, Locked, Detail, Mode)
+        } catch {
+            Write-AppLog "Remote query failed for $target`: $($_.Exception.Message)" 'ERROR'
+        }
     }
+    return $results | Select-Object Computer, Adapter, GUID, Locked, Detail, Mode
+}
+
+function Select-LockOutputRecord {
+    param([object[]]$Data)
+    return $Data | Select-Object Computer, Adapter, GUID, Locked, Detail, Mode
+}
+
+function Export-LockData {
+    param(
+        [object[]]$Data,
+        [ValidateSet('Table','Json','Csv')]
+        [string]$Format = 'Table',
+        [string]$OutputFile = ''
+    )
+
+    $records = @(Select-LockOutputRecord -Data $Data)
+    switch ($Format) {
+        'Json' {
+            $content = $records | ConvertTo-Json -Depth 4
+            if ($OutputFile) {
+                Set-Content -LiteralPath $OutputFile -Value $content -Encoding UTF8 -ErrorAction Stop
+                Write-AppLog "JSON output written: $OutputFile ($($records.Count) rows)" 'OK'
+            } else {
+                Write-Output $content
+            }
+        }
+        'Csv' {
+            if ($OutputFile) {
+                $records | Export-Csv -LiteralPath $OutputFile -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+                Write-AppLog "CSV output written: $OutputFile ($($records.Count) rows)" 'OK'
+            } else {
+                $records | ConvertTo-Csv -NoTypeInformation
+            }
+        }
+        'Table' {
+            $records | Format-Table -AutoSize
+        }
+    }
+}
+
+function Get-DefaultOutputFile {
+    param(
+        [string]$Format,
+        [string]$Prefix = 'adapterlock-report'
+    )
+    $ext = switch ($Format) {
+        'Json' { 'json' }
+        'Csv'  { 'csv' }
+        default { 'html' }
+    }
+    return Join-Path (Get-Location) "$Prefix-$(Get-Date -Format 'yyyyMMdd-HHmmss').$ext"
 }
 
 function Export-LockReport {
@@ -1323,10 +1382,15 @@ if ($script:IsCli) {
             Write-AppLog 'Specify -ComputerName with -Query' 'ERROR'
             exit 2
         }
+        $format = if ($OutputFormat) { $OutputFormat } else { 'Table' }
+        if ($format -eq 'Html') {
+            Write-AppLog 'Use -Report for Html output; -Query supports Table, Json, and Csv' 'ERROR'
+            exit 2
+        }
         Write-AppLog "AdapterLock v$($script:Version) querying remote hosts"
         $results = Invoke-RemoteLockQuery -Targets $ComputerName
         if ($results.Count -eq 0) { exit 1 }
-        $results | Format-Table -AutoSize
+        Export-LockData -Data $results -Format $format -OutputFile $OutputFile
         exit 0
     }
     if ($Report) {
@@ -1334,13 +1398,22 @@ if ($script:IsCli) {
             Write-AppLog 'Specify -ComputerName with -Report' 'ERROR'
             exit 2
         }
+        $format = if ($OutputFormat) { $OutputFormat } else { 'Html' }
+        if ($format -eq 'Table') {
+            Write-AppLog 'Use -Query for Table output; -Report supports Html, Json, and Csv' 'ERROR'
+            exit 2
+        }
         if (-not $OutputFile) {
-            $OutputFile = Join-Path (Get-Location) "adapterlock-report-$(Get-Date -Format 'yyyyMMdd-HHmmss').html"
+            $OutputFile = Get-DefaultOutputFile -Format $format
         }
         Write-AppLog "AdapterLock v$($script:Version) generating fleet report"
         $results = Invoke-RemoteLockQuery -Targets $ComputerName
         if ($results.Count -eq 0) { exit 1 }
-        Export-LockReport -OutputFile $OutputFile -Data $results
+        if ($format -eq 'Html') {
+            Export-LockReport -OutputFile $OutputFile -Data $results
+        } else {
+            Export-LockData -Data $results -Format $format -OutputFile $OutputFile
+        }
         exit 0
     }
 
@@ -1614,7 +1687,7 @@ if ($script:IsCli) {
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="AdapterLock" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-                        <TextBlock x:Name="VersionText" Text=" v0.8.2" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
+                        <TextBlock x:Name="VersionText" Text=" v0.8.3" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
                     </StackPanel>
                     <TextBlock Margin="0,6,24,0"
                                Text="Protect static NIC configuration with adapter-specific registry ACL enforcement. Select adapters, review state, and apply lock policies without changing unrelated interfaces."
