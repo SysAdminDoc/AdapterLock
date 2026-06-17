@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.8.0
+.VERSION 0.8.1
 .GUID fd499ba1-8ce6-4512-877e-9dede49777f5
 .AUTHOR SysAdminDoc
 .DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
@@ -7,7 +7,7 @@
 .TAGS networking adapter lock registry ACL IP security PACS
 .LICENSEURI https://github.com/SysAdminDoc/AdapterLock/blob/master/LICENSE
 .PROJECTURI https://github.com/SysAdminDoc/AdapterLock
-.RELEASENOTES Premium WPF polish, clearer lock-state details, refined empty states, styled safety dialogs.
+.RELEASENOTES Hardens policy application, WMI drift coverage, report encoding, and remediation exit semantics.
 #>
 
 <#
@@ -49,7 +49,7 @@
     Preview which registry keys would be modified without writing any ACL changes.
 
 .PARAMETER LoadPolicy
-    Path to a JSON policy file to load and enforce. Each adapter in the policy is locked.
+    Path to a JSON policy file to load and enforce. Entries with State=locked are applied; partial entries are skipped with a warning.
 
 .PARAMETER RestoreBackup
     Restore the latest saved SDDL backup for the adapter specified by -Guid.
@@ -76,7 +76,7 @@
     One or more remote computer names to query. Used with -Query.
 
 .PARAMETER InstallWatcher
-    Install a permanent WMI event subscription that logs registry changes on Tcpip interface keys (EventId 1002).
+    Install permanent WMI event subscriptions that log registry tree changes on Tcpip, Tcpip6, and NetBT interface keys (EventId 1002).
 
 .PARAMETER UninstallWatcher
     Remove the AdapterLock WMI drift watcher.
@@ -198,7 +198,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.8.0'
+$script:Version   = '0.8.1'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -304,6 +304,39 @@ public static System.DateTime GetKeyLastWrite(string path) {
     }
 }
 
+function ConvertTo-ReportHtml {
+    param([object]$Value)
+    if ($null -eq $Value) { return '' }
+    return [System.Net.WebUtility]::HtmlEncode([string]$Value)
+}
+
+function ConvertTo-PolicyGuid {
+    param([string]$Value)
+    if (-not $Value) { return '' }
+    $trimmed = $Value.Trim()
+    if ($trimmed -notmatch '^\{?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}?$') {
+        return $null
+    }
+    return '{' + ($trimmed.Trim('{}').ToLowerInvariant()) + '}'
+}
+
+function ConvertTo-PolicyMac {
+    param([string]$Value)
+    if (-not $Value) { return '' }
+    $norm = ($Value -replace '[:\-\s\.]', '').ToUpperInvariant()
+    if ($norm -notmatch '^[0-9A-F]{12}$') { return $null }
+    return ($norm -replace '(.{2})(?=.)', '$1-')
+}
+
+function Get-PolicyIdentifierKey {
+    param($Adapter)
+    $keys = New-Object System.Collections.Generic.List[string]
+    if ($Adapter.Name) { $keys.Add("name:$(([string]$Adapter.Name).ToLowerInvariant())") }
+    if ($Adapter.MAC)  { $keys.Add("mac:$(([string]$Adapter.MAC).ToUpperInvariant())") }
+    if ($Adapter.GUID) { $keys.Add("guid:$(([string]$Adapter.GUID).ToLowerInvariant())") }
+    return $keys
+}
+
 function Export-LockPolicy {
     param([string]$Path)
     $policy = @{
@@ -351,6 +384,7 @@ function Import-LockPolicy {
         return @()
     }
     $valid = @()
+    $seen = @{}
     for ($i = 0; $i -lt $policy.Adapters.Count; $i++) {
         $a = $policy.Adapters[$i]
         $hasId = [bool]$a.Name -or [bool]$a.MAC -or [bool]$a.GUID
@@ -358,10 +392,120 @@ function Import-LockPolicy {
             Write-AppLog "Policy validation failed: Adapters[$i] has no Name, MAC, or GUID" 'ERROR'
             return @()
         }
-        $valid += $a
+
+        $state = if ($a.State) { ([string]$a.State).Trim().ToLowerInvariant() } else { 'locked' }
+        if ($state -notin @('locked', 'partial')) {
+            Write-AppLog "Policy validation failed: Adapters[$i] has invalid State '$($a.State)'" 'ERROR'
+            return @()
+        }
+
+        $guid = ''
+        if ($a.GUID) {
+            $guid = ConvertTo-PolicyGuid -Value ([string]$a.GUID)
+            if ($null -eq $guid) {
+                Write-AppLog "Policy validation failed: Adapters[$i] has invalid GUID '$($a.GUID)'" 'ERROR'
+                return @()
+            }
+        }
+
+        $mac = ''
+        if ($a.MAC) {
+            $mac = ConvertTo-PolicyMac -Value ([string]$a.MAC)
+            if ($null -eq $mac) {
+                Write-AppLog "Policy validation failed: Adapters[$i] has invalid MAC '$($a.MAC)'" 'ERROR'
+                return @()
+            }
+        }
+
+        $normalized = [pscustomobject]@{
+            Name  = if ($a.Name) { [string]$a.Name } else { '' }
+            MAC   = $mac
+            GUID  = $guid
+            State = $state
+        }
+
+        foreach ($key in (Get-PolicyIdentifierKey -Adapter $normalized)) {
+            if ($seen.ContainsKey($key)) {
+                Write-AppLog "Policy validation failed: duplicate adapter identifier '$key'" 'ERROR'
+                return @()
+            }
+            $seen[$key] = $true
+        }
+
+        $valid += $normalized
     }
     Write-AppLog "Policy loaded: $Path ($($valid.Count) adapters)" 'OK'
     return $valid
+}
+
+function Get-LockPolicySummary {
+    param([object[]]$Results)
+    $applied = @($Results | Where-Object { $_.Status -eq 'Applied' }).Count
+    $dryRun  = @($Results | Where-Object { $_.Status -eq 'DryRun' }).Count
+    $skipped = @($Results | Where-Object { $_.Status -eq 'SkippedPartial' }).Count
+    $missing = @($Results | Where-Object { $_.Status -eq 'NotFound' }).Count
+    $failed  = @($Results | Where-Object { $_.Status -eq 'Failed' }).Count
+    return "Policy summary: $applied applied, $dryRun dry-run, $skipped partial skipped, $missing missing, $failed failed"
+}
+
+function Invoke-LockPolicy {
+    param(
+        [object[]]$Policy,
+        [switch]$Preview
+    )
+
+    $results = @()
+    foreach ($p in $Policy) {
+        $targetText = if ($p.Name) { $p.Name } elseif ($p.MAC) { $p.MAC } else { $p.GUID }
+        if ($p.State -eq 'partial') {
+            Write-AppLog "Policy skipped partial target: $targetText. Change State to 'locked' to enforce it." 'WARN'
+            $results += [pscustomobject]@{
+                Target = $targetText
+                Adapter = ''
+                GUID = $p.GUID
+                State = $p.State
+                Status = 'SkippedPartial'
+            }
+            continue
+        }
+
+        $adapter = Find-AdapterByIdentifier -ByName $p.Name -ByMac $p.MAC -ByGuid $p.GUID
+        if (-not $adapter) {
+            Write-AppLog "Policy target not found: $($p.Name) / $($p.MAC) / $($p.GUID)" 'WARN'
+            $results += [pscustomobject]@{
+                Target = $targetText
+                Adapter = ''
+                GUID = $p.GUID
+                State = $p.State
+                Status = 'NotFound'
+            }
+            continue
+        }
+
+        $ok = Lock-Adapter -Guid $adapter.InterfaceGuid -Name $adapter.Name -Preview:($Preview -or $script:IsDryRun)
+        $status = if ($Preview -or $script:IsDryRun) {
+            'DryRun'
+        } elseif ($ok) {
+            'Applied'
+        } else {
+            'Failed'
+        }
+        if ($status -eq 'Applied') {
+            Write-AppLog "Policy enforced: $($adapter.Name)" 'OK'
+        } elseif ($status -eq 'Failed') {
+            Write-AppLog "Policy enforcement failed: $($adapter.Name)" 'ERROR'
+        }
+
+        $results += [pscustomobject]@{
+            Target = $targetText
+            Adapter = $adapter.Name
+            GUID = $adapter.InterfaceGuid
+            State = $p.State
+            Status = $status
+        }
+    }
+    Write-AppLog (Get-LockPolicySummary -Results $results) 'INFO'
+    return $results
 }
 
 function Install-EnforcementTask {
@@ -371,13 +515,18 @@ function Install-EnforcementTask {
     if (-not $PolicyPath) {
         $PolicyPath = Join-Path $env:ProgramData 'AdapterLock\policy.json'
     }
-    $action = if ($PolicyPath -and (Test-Path -LiteralPath $PolicyPath)) {
-        New-ScheduledTaskAction -Execute 'powershell.exe' `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -LoadPolicy `"$PolicyPath`" -Silent"
-    } else {
-        New-ScheduledTaskAction -Execute 'powershell.exe' `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -DryRun -Silent"
+    if (-not (Test-Path -LiteralPath $PolicyPath)) {
+        Write-AppLog "Enforcement task not installed: policy file not found at $PolicyPath" 'ERROR'
+        return $false
     }
+    $policy = @(Import-LockPolicy -Path $PolicyPath)
+    if ($policy.Count -eq 0) {
+        Write-AppLog "Enforcement task not installed: policy file is empty or invalid at $PolicyPath" 'ERROR'
+        return $false
+    }
+
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -LoadPolicy `"$PolicyPath`" -Silent"
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId SYSTEM -RunLevel Highest
     try {
@@ -386,8 +535,9 @@ function Install-EnforcementTask {
         Write-AppLog "Existing task cleanup failed: $($_.Exception.Message)" 'WARN'
     }
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
-    Write-AppLog "Enforcement task installed: $taskName (runs at startup)" 'OK'
+    Write-AppLog "Enforcement task installed: $taskName (runs at startup with $($policy.Count) policy target(s))" 'OK'
     Write-EvtLog "Enforcement task installed on $env:COMPUTERNAME"
+    return $true
 }
 
 function Uninstall-EnforcementTask {
@@ -402,37 +552,58 @@ function Uninstall-EnforcementTask {
 }
 
 
+function Get-WmiWatcherDefinition {
+    return @(
+        [pscustomobject]@{
+            Name = 'AdapterLock_RegistryFilter_Tcpip'
+            Label = 'Tcpip'
+            RootPath = 'SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces'
+        }
+        [pscustomobject]@{
+            Name = 'AdapterLock_RegistryFilter_Tcpip6'
+            Label = 'Tcpip6'
+            RootPath = 'SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters\\Interfaces'
+        }
+        [pscustomobject]@{
+            Name = 'AdapterLock_RegistryFilter_NetBT'
+            Label = 'NetBT'
+            RootPath = 'SYSTEM\\CurrentControlSet\\Services\\NetBT\\Parameters\\Interfaces'
+        }
+    )
+}
+
+function Get-WmiWatcherFilterName {
+    $names = @('AdapterLock_RegistryFilter')
+    $names += @(Get-WmiWatcherDefinition | Select-Object -ExpandProperty Name)
+    return $names
+}
+
 function Install-WmiWatcher {
     [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWMICmdlet', '', Justification='Permanent WMI event subscriptions require these legacy subscription classes on Windows PowerShell 5.1.')]
     param()
 
     $wmiNs = 'root\subscription'
-    $filterName = 'AdapterLock_RegistryFilter'
     $consumerName = 'AdapterLock_LogConsumer'
+    $definitions = @(Get-WmiWatcherDefinition)
 
-    try {
-        Get-WmiObject -Namespace $wmiNs -Class __FilterToConsumerBinding -Filter "Filter = ""__EventFilter.Name='$filterName'""" -ErrorAction SilentlyContinue | Remove-WmiObject -ErrorAction SilentlyContinue
-    } catch {
-        Write-AppLog "Existing WMI binding cleanup skipped: $($_.Exception.Message)" 'INFO'
+    foreach ($filterName in (Get-WmiWatcherFilterName)) {
+        try {
+            Get-WmiObject -Namespace $wmiNs -Class __FilterToConsumerBinding -Filter "Filter = ""__EventFilter.Name='$filterName'""" -ErrorAction SilentlyContinue | Remove-WmiObject -ErrorAction SilentlyContinue
+        } catch {
+            Write-AppLog "Existing WMI binding cleanup skipped for $filterName`: $($_.Exception.Message)" 'INFO'
+        }
+        try {
+            Get-WmiObject -Namespace $wmiNs -Class __EventFilter -Filter "Name='$filterName'" -ErrorAction SilentlyContinue | Remove-WmiObject -ErrorAction SilentlyContinue
+        } catch {
+            Write-AppLog "Existing WMI filter cleanup skipped for $filterName`: $($_.Exception.Message)" 'INFO'
+        }
     }
-    try {
-        Get-WmiObject -Namespace $wmiNs -Class __EventFilter -Filter "Name='$filterName'" -ErrorAction SilentlyContinue | Remove-WmiObject -ErrorAction SilentlyContinue
-    } catch {
-        Write-AppLog "Existing WMI filter cleanup skipped: $($_.Exception.Message)" 'INFO'
-    }
+
     try {
         Get-WmiObject -Namespace $wmiNs -Class NTEventLogEventConsumer -Filter "Name='$consumerName'" -ErrorAction SilentlyContinue | Remove-WmiObject -ErrorAction SilentlyContinue
     } catch {
         Write-AppLog "Existing WMI consumer cleanup skipped: $($_.Exception.Message)" 'INFO'
     }
-
-    $wql = "SELECT * FROM RegistryValueChangeEvent WHERE Hive='HKEY_LOCAL_MACHINE' AND KeyPath LIKE 'SYSTEM\\\\CurrentControlSet\\\\Services\\\\Tcpip\\\\Parameters\\\\Interfaces\\\\%'"
-    $filter = Set-WmiInstance -Namespace $wmiNs -Class __EventFilter -Arguments @{
-        Name = $filterName
-        EventNamespace = 'root\default'
-        QueryLanguage = 'WQL'
-        Query = $wql
-    } -ErrorAction Stop
 
     $consumer = Set-WmiInstance -Namespace $wmiNs -Class NTEventLogEventConsumer -Arguments @{
         Name = $consumerName
@@ -441,15 +612,25 @@ function Install-WmiWatcher {
         EventType = [uint32]2
         Category = [uint16]0
         NumberOfInsertionStrings = [uint32]1
-        InsertionStringTemplates = @('AdapterLock drift: registry change detected on %KeyPath%')
+        InsertionStringTemplates = @('AdapterLock drift: registry tree change detected on %RootPath%')
     } -ErrorAction Stop
 
-    Set-WmiInstance -Namespace $wmiNs -Class __FilterToConsumerBinding -Arguments @{
-        Filter = $filter
-        Consumer = $consumer
-    } -ErrorAction Stop | Out-Null
+    foreach ($definition in $definitions) {
+        $wql = "SELECT * FROM RegistryTreeChangeEvent WHERE Hive='HKEY_LOCAL_MACHINE' AND RootPath='$($definition.RootPath)'"
+        $filter = Set-WmiInstance -Namespace $wmiNs -Class __EventFilter -Arguments @{
+            Name = $definition.Name
+            EventNamespace = 'root\default'
+            QueryLanguage = 'WQL'
+            Query = $wql
+        } -ErrorAction Stop
 
-    Write-AppLog "WMI watcher installed: $filterName -> $consumerName (EventId 1002)" 'OK'
+        Set-WmiInstance -Namespace $wmiNs -Class __FilterToConsumerBinding -Arguments @{
+            Filter = $filter
+            Consumer = $consumer
+        } -ErrorAction Stop | Out-Null
+    }
+
+    Write-AppLog "WMI watcher installed: $($definitions.Count) registry tree filters -> $consumerName (EventId 1002)" 'OK'
     Write-EvtLog "WMI drift watcher installed on $env:COMPUTERNAME"
 }
 
@@ -458,21 +639,22 @@ function Uninstall-WmiWatcher {
     param()
 
     $wmiNs = 'root\subscription'
-    $filterName = 'AdapterLock_RegistryFilter'
     $consumerName = 'AdapterLock_LogConsumer'
     $removed = 0
 
-    try {
-        Get-WmiObject -Namespace $wmiNs -Class __FilterToConsumerBinding -Filter "Filter = ""__EventFilter.Name='$filterName'""" -ErrorAction Stop | Remove-WmiObject -ErrorAction Stop
-        $removed++
-    } catch {
-        Write-AppLog "WMI binding removal skipped: $($_.Exception.Message)" 'INFO'
-    }
-    try {
-        Get-WmiObject -Namespace $wmiNs -Class __EventFilter -Filter "Name='$filterName'" -ErrorAction Stop | Remove-WmiObject -ErrorAction Stop
-        $removed++
-    } catch {
-        Write-AppLog "WMI filter removal skipped: $($_.Exception.Message)" 'INFO'
+    foreach ($filterName in (Get-WmiWatcherFilterName)) {
+        try {
+            Get-WmiObject -Namespace $wmiNs -Class __FilterToConsumerBinding -Filter "Filter = ""__EventFilter.Name='$filterName'""" -ErrorAction Stop | Remove-WmiObject -ErrorAction Stop
+            $removed++
+        } catch {
+            Write-AppLog "WMI binding removal skipped for $filterName`: $($_.Exception.Message)" 'INFO'
+        }
+        try {
+            Get-WmiObject -Namespace $wmiNs -Class __EventFilter -Filter "Name='$filterName'" -ErrorAction Stop | Remove-WmiObject -ErrorAction Stop
+            $removed++
+        } catch {
+            Write-AppLog "WMI filter removal skipped for $filterName`: $($_.Exception.Message)" 'INFO'
+        }
     }
     try {
         Get-WmiObject -Namespace $wmiNs -Class NTEventLogEventConsumer -Filter "Name='$consumerName'" -ErrorAction Stop | Remove-WmiObject -ErrorAction Stop
@@ -788,31 +970,65 @@ function Test-LockIntegrity {
 
     $results = @()
     foreach ($t in $targets) {
-        $guid = $t.GUID
-        $name = if ($t.Name) { $t.Name } else { $guid }
+        if ($t.State -eq 'partial') {
+            $targetName = if ($t.Name) { $t.Name } else { $t.GUID }
+            Write-AppLog "Skipping partial policy target during integrity check: $targetName" 'WARN'
+            continue
+        }
+        $adapter = Find-AdapterByIdentifier -ByName $t.Name -ByMac $t.MAC -ByGuid $t.GUID
+        if (-not $adapter) {
+            $targetName = if ($t.Name) { $t.Name } elseif ($t.MAC) { $t.MAC } else { $t.GUID }
+            Write-AppLog "Policy target not found during integrity check: $targetName" 'WARN'
+            $results += [pscustomobject]@{
+                Adapter        = $targetName
+                GUID           = $t.GUID
+                Status         = 'DRIFT'
+                OriginalStatus = 'DRIFT'
+                Remediated     = $false
+                V4             = $false
+                V6             = $false
+                NetBT          = $false
+                Detail         = 'Policy target not found'
+            }
+            continue
+        }
+        $guid = $adapter.InterfaceGuid
+        $name = $adapter.Name
         $detail = Test-AdapterLockedDetailed -Guid $guid
         $actual = (Get-LockBadgeFromDetail -Detail $detail) -eq 'LOCKED'
         $status = if ($actual) { 'OK' } else { 'DRIFT' }
-
-        $results += [pscustomobject]@{
-            Adapter   = $name
-            GUID      = $guid
-            Status    = $status
-            V4        = $detail.V4Locked
-            V6        = $detail.V6Locked
-            NetBT     = $detail.NetBTLocked
-            Detail    = Get-LockDetailText -Detail $detail
-        }
+        $originalStatus = $status
+        $remediated = $false
 
         if ($status -eq 'DRIFT') {
             Write-AppLog "DRIFT detected: $name ($guid) - V4=$($detail.V4Locked) V6=$($detail.V6Locked) NetBT=$($detail.NetBTLocked)" 'WARN'
             Write-EvtLog "Lock drift detected: $name ($guid) on $env:COMPUTERNAME" 'Warning'
             if ($Fix) {
                 Write-AppLog "Remediating drift for $name ($guid)" 'INFO'
-                Lock-Adapter -Guid $guid -Name $name | Out-Null
+                $remediated = [bool](Lock-Adapter -Guid $guid -Name $name)
+                $detail = Test-AdapterLockedDetailed -Guid $guid
+                $actual = (Get-LockBadgeFromDetail -Detail $detail) -eq 'LOCKED'
+                $status = if ($actual) { 'OK' } else { 'DRIFT' }
+                if ($status -eq 'OK') {
+                    Write-AppLog "Remediation verified: $name ($guid) is locked" 'OK'
+                } else {
+                    Write-AppLog "Remediation incomplete: $name ($guid) still has drift" 'ERROR'
+                }
             }
         } else {
             Write-AppLog "OK: $name ($guid) - all applicable locks intact" 'INFO'
+        }
+
+        $results += [pscustomobject]@{
+            Adapter        = $name
+            GUID           = $guid
+            Status         = $status
+            OriginalStatus = $originalStatus
+            Remediated     = $remediated
+            V4             = $detail.V4Locked
+            V6             = $detail.V6Locked
+            NetBT          = $detail.NetBTLocked
+            Detail         = Get-LockDetailText -Detail $detail
         }
     }
     return $results
@@ -919,7 +1135,13 @@ function Export-LockReport {
             'Unlocked' { '#a6e3a1' }
             default    { '#cdd6f4' }
         }
-        "        <tr><td>$($r.Computer)</td><td>$($r.Adapter)</td><td>$($r.GUID)</td><td>$($r.Mode)</td><td style=`"color:$color;font-weight:bold`">$($r.Locked)</td><td>$($r.Detail)</td></tr>"
+        $computer = ConvertTo-ReportHtml $r.Computer
+        $adapter = ConvertTo-ReportHtml $r.Adapter
+        $guid = ConvertTo-ReportHtml $r.GUID
+        $mode = ConvertTo-ReportHtml $r.Mode
+        $lockedState = ConvertTo-ReportHtml $r.Locked
+        $detail = ConvertTo-ReportHtml $r.Detail
+        "        <tr><td>$computer</td><td>$adapter</td><td>$guid</td><td>$mode</td><td style=`"color:$color;font-weight:bold`">$lockedState</td><td>$detail</td></tr>"
     }
 
     $html = @"
@@ -1038,8 +1260,8 @@ if ($script:IsCli) {
 
     if ($InstallTask) {
         Write-AppLog "AdapterLock v$($script:Version) installing enforcement task"
-        Install-EnforcementTask -PolicyPath $PolicyFile
-        exit 0
+        $ok = Install-EnforcementTask -PolicyPath $PolicyFile
+        if ($ok) { exit 0 } else { exit 1 }
     }
     if ($UninstallTask) {
         Write-AppLog "AdapterLock v$($script:Version) uninstalling enforcement task"
@@ -1076,28 +1298,22 @@ if ($script:IsCli) {
         Write-AppLog "AdapterLock v$($script:Version) loading policy: $LoadPolicy"
         $policy = Import-LockPolicy -Path $LoadPolicy
         if ($policy.Count -eq 0) { exit 1 }
-        foreach ($p in $policy) {
-            $adapter = Find-AdapterByIdentifier -ByName $p.Name -ByMac $p.MAC -ByGuid $p.GUID
-            if ($adapter) {
-                Lock-Adapter -Guid $adapter.InterfaceGuid -Name $adapter.Name
-                Write-AppLog "Policy enforced: $($adapter.Name)"
-            } else {
-                Write-AppLog "Policy target not found: $($p.Name) / $($p.MAC)" 'WARN'
-            }
-        }
+        $policyResults = @(Invoke-LockPolicy -Policy $policy -Preview:$DryRun)
+        $failures = @($policyResults | Where-Object { $_.Status -in @('NotFound', 'Failed') })
+        if ($failures.Count -gt 0) { exit 1 }
         exit 0
     }
     if ($VerifyLocks) {
         Write-AppLog "AdapterLock v$($script:Version) verifying lock integrity"
         $results = Test-LockIntegrity -Fix:$Remediate
-        $drift = @($results | Where-Object { $_.Status -eq 'DRIFT' })
-        if ($drift.Count -gt 0) {
-            if ($Remediate) {
-                Write-AppLog "Remediated $($drift.Count) adapter(s) with drift" 'OK'
-            } else {
-                Write-AppLog "$($drift.Count) adapter(s) have lock drift (use -Remediate to fix)" 'WARN'
-            }
+        $originalDrift = @($results | Where-Object { $_.OriginalStatus -eq 'DRIFT' -or ($null -eq $_.OriginalStatus -and $_.Status -eq 'DRIFT') })
+        $remainingDrift = @($results | Where-Object { $_.Status -eq 'DRIFT' })
+        if ($remainingDrift.Count -gt 0) {
+            Write-AppLog "$($remainingDrift.Count) adapter(s) still have lock drift" 'WARN'
             exit 1
+        }
+        if ($Remediate -and $originalDrift.Count -gt 0) {
+            Write-AppLog "Remediated and verified $($originalDrift.Count) adapter(s) with drift" 'OK'
         }
         Write-AppLog "All locks intact ($($results.Count) adapter(s) verified)" 'OK'
         exit 0
@@ -1398,7 +1614,7 @@ if ($script:IsCli) {
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="AdapterLock" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-                        <TextBlock x:Name="VersionText" Text=" v0.8.0" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
+                        <TextBlock x:Name="VersionText" Text=" v0.8.1" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
                     </StackPanel>
                     <TextBlock Margin="0,6,24,0"
                                Text="Protect static NIC configuration with adapter-specific registry ACL enforcement. Select adapters, review state, and apply lock policies without changing unrelated interfaces."
@@ -2124,12 +2340,10 @@ $LoadPolicyBtn.Add_Click({
     if ($dlg.ShowDialog() -eq 'OK') {
         $policy = Import-LockPolicy -Path $dlg.FileName
         if ($policy.Count -gt 0) {
-            foreach ($p in $policy) {
-                $a = Find-AdapterByIdentifier -ByName $p.Name -ByMac $p.MAC -ByGuid $p.GUID
-                if ($a) { [void](Lock-Adapter -Guid $a.InterfaceGuid -Name $a.Name) }
-            }
+            $policyResults = @(Invoke-LockPolicy -Policy $policy)
+            $summary = Get-LockPolicySummary -Results $policyResults
             Show-AdapterGrid
-            $script:StatusText.Text = "Policy applied: $($policy.Count) adapter(s)"
+            $script:StatusText.Text = $summary
         } else {
             $script:StatusText.Text = 'Failed to load policy.'
         }

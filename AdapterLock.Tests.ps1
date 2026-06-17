@@ -127,7 +127,7 @@ Describe 'AdapterLock core functions' {
     }
 
     It 'round-trips exported lock policy JSON' {
-        Import-AdapterLockFunction -Name 'Export-LockPolicy', 'Import-LockPolicy'
+        Import-AdapterLockFunction -Name 'Export-LockPolicy', 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
         $script:Version = 'test'
         function Get-AdapterRow {
             @(
@@ -174,11 +174,52 @@ Describe 'AdapterLock core functions' {
     }
 
     It 'rejects adapter entry without any identifier' {
-        Import-AdapterLockFunction -Name 'Import-LockPolicy'
+        Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
         $policyPath = Join-Path $TestDrive 'bad-no-id.json'
         @{ Version = '0.6.0'; Adapters = @(@{ State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $policyPath
         $result = @(Import-LockPolicy -Path $policyPath)
         $result.Count | Should -Be 0
+    }
+
+    It 'rejects invalid and duplicate policy entries' {
+        Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
+
+        $badStatePath = Join-Path $TestDrive 'bad-state.json'
+        @{ Version = '0.8.1'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
+
+        $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
+        @{ Version = '0.8.1'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
+
+        $duplicatePath = Join-Path $TestDrive 'duplicate.json'
+        @{
+            Version = '0.8.1'
+            Adapters = @(
+                @{ Name = 'Ethernet'; State = 'locked' }
+                @{ Name = 'Ethernet'; State = 'locked' }
+            )
+        } | ConvertTo-Json -Depth 4 | Set-Content $duplicatePath
+        @(Import-LockPolicy -Path $duplicatePath).Count | Should -Be 0
+    }
+
+    It 'skips partial policy entries and dry-runs locked entries' {
+        Import-AdapterLockFunction -Name 'Invoke-LockPolicy', 'Get-LockPolicySummary', 'Find-AdapterByIdentifier', 'Lock-Adapter'
+        $policy = @(
+            [pscustomobject]@{ Name = 'Ethernet'; MAC = ''; GUID = ''; State = 'locked' }
+            [pscustomobject]@{ Name = 'Wi-Fi'; MAC = ''; GUID = ''; State = 'partial' }
+        )
+        Mock -CommandName Find-AdapterByIdentifier -MockWith {
+            [pscustomobject]@{ Name = 'Ethernet'; InterfaceGuid = '{11111111-1111-1111-1111-111111111111}' }
+        }
+        Mock -CommandName Lock-Adapter -MockWith { $true }
+
+        $results = @(Invoke-LockPolicy -Policy $policy -Preview)
+
+        $results.Count | Should -Be 2
+        $results[0].Status | Should -Be 'DryRun'
+        $results[1].Status | Should -Be 'SkippedPartial'
+        Should -Invoke -CommandName Lock-Adapter -Times 1
     }
 
     It 'detects drift when adapter is partially locked' {
@@ -206,6 +247,51 @@ Describe 'AdapterLock core functions' {
         $results = @(Test-LockIntegrity)
         $results.Count | Should -Be 1
         $results[0].Status | Should -Be 'DRIFT'
+    }
+
+    It 'returns post-remediation lock state after fixing drift' {
+        Import-AdapterLockFunction -Name 'Test-LockIntegrity', 'Test-AdapterLocked', 'Test-AdapterLockedDetailed', 'Find-AdapterByIdentifier', 'Lock-Adapter', 'Write-EvtLog', 'Get-LockBadgeFromDetail', 'Get-LockDetailText'
+        Mock -CommandName Get-NetAdapter -MockWith {
+            @([pscustomobject]@{
+                Name = 'Ethernet'
+                InterfaceGuid = '{11111111-1111-1111-1111-111111111111}'
+            })
+        }
+        Mock -CommandName Test-Path -MockWith {
+            if ($LiteralPath -and $LiteralPath -like '*policy.json') { return $false }
+            return $true
+        }
+        Mock -CommandName Test-AdapterLocked -MockWith { $true }
+        Mock -CommandName Find-AdapterByIdentifier -MockWith {
+            [pscustomobject]@{
+                Name = 'Ethernet'
+                InterfaceGuid = '{11111111-1111-1111-1111-111111111111}'
+            }
+        }
+        $script:detailCallCount = 0
+        Mock -CommandName Test-AdapterLockedDetailed -MockWith {
+            $script:detailCallCount++
+            if ($script:detailCallCount -eq 1) {
+                return [pscustomobject]@{
+                    V4Locked = $true; V4Exists = $true
+                    V6Locked = $false; V6Exists = $true
+                    NetBTLocked = $false; NetBTExists = $true
+                }
+            }
+            [pscustomobject]@{
+                V4Locked = $true; V4Exists = $true
+                V6Locked = $true; V6Exists = $true
+                NetBTLocked = $true; NetBTExists = $true
+            }
+        }
+        Mock -CommandName Lock-Adapter -MockWith { $true }
+
+        $results = @(Test-LockIntegrity -Fix)
+
+        $results.Count | Should -Be 1
+        $results[0].OriginalStatus | Should -Be 'DRIFT'
+        $results[0].Status | Should -Be 'OK'
+        $results[0].Remediated | Should -Be $true
     }
 
     It 'covers all three IP stack keys per adapter' {
@@ -250,7 +336,7 @@ Describe 'AdapterLock core functions' {
     }
 
     It 'generates HTML fleet report with correct structure' {
-        Import-AdapterLockFunction -Name 'Export-LockReport'
+        Import-AdapterLockFunction -Name 'Export-LockReport', 'ConvertTo-ReportHtml'
         $script:Version = 'test'
         $data = @(
             [pscustomobject]@{ Computer = 'HOST1'; Adapter = 'Ethernet'; GUID = '{aaa}'; Mode = 'Static'; Locked = 'LOCKED'; Detail = 'v4+v6' }
@@ -264,6 +350,75 @@ Describe 'AdapterLock core functions' {
         $html | Should -Match 'HOST2'
         $html | Should -Match 'LOCKED'
         $html | Should -Match 'Unlocked'
+    }
+
+    It 'HTML-encodes fleet report values' {
+        Import-AdapterLockFunction -Name 'Export-LockReport', 'ConvertTo-ReportHtml'
+        $script:Version = 'test'
+        $data = @(
+            [pscustomobject]@{
+                Computer = 'HOST<script>'
+                Adapter = 'Ethernet "PACS"'
+                GUID = '{aaa}'
+                Mode = 'Static'
+                Locked = 'LOCKED'
+                Detail = '<open>&drift'
+            }
+        )
+        $reportPath = Join-Path $TestDrive 'encoded-report.html'
+        Export-LockReport -OutputFile $reportPath -Data $data
+        $html = Get-Content $reportPath -Raw
+
+        $html | Should -Match 'HOST&lt;script&gt;'
+        $html | Should -Match 'Ethernet &quot;PACS&quot;'
+        $html | Should -Match '&lt;open&gt;&amp;drift'
+        $html | Should -Not -Match '<script>'
+    }
+
+    It 'defines WMI tree watchers for every enforced registry surface' {
+        Import-AdapterLockFunction -Name 'Get-WmiWatcherDefinition', 'Get-WmiWatcherFilterName'
+
+        $definitions = @(Get-WmiWatcherDefinition)
+
+        $definitions.Count | Should -Be 3
+        ($definitions | Where-Object { $_.RootPath -match 'Services\\\\Tcpip\\\\Parameters\\\\Interfaces' }) | Should -Not -BeNullOrEmpty
+        ($definitions | Where-Object { $_.RootPath -match 'Services\\\\Tcpip6\\\\Parameters\\\\Interfaces' }) | Should -Not -BeNullOrEmpty
+        ($definitions | Where-Object { $_.RootPath -match 'Services\\\\NetBT\\\\Parameters\\\\Interfaces' }) | Should -Not -BeNullOrEmpty
+        (Get-WmiWatcherFilterName) | Should -Contain 'AdapterLock_RegistryFilter'
+    }
+
+    It 'installs WMI RegistryTreeChangeEvent filters for all stack keys' {
+        Import-AdapterLockFunction -Name 'Install-WmiWatcher', 'Get-WmiWatcherDefinition', 'Get-WmiWatcherFilterName', 'Write-EvtLog'
+        Mock -CommandName Get-WmiObject -MockWith { @() }
+        Mock -CommandName Remove-WmiObject -MockWith {}
+        Mock -CommandName Set-WmiInstance -MockWith {
+            if ($Class -eq '__EventFilter') {
+                [pscustomobject]@{ Name = $Arguments.Name; Query = $Arguments.Query }
+            } else {
+                [pscustomobject]@{ Name = $Arguments.Name }
+            }
+        }
+
+        Install-WmiWatcher
+
+        Should -Invoke -CommandName Set-WmiInstance -Times 3 -ParameterFilter {
+            $Class -eq '__EventFilter' -and $Arguments.Query -match 'RegistryTreeChangeEvent'
+        }
+        Should -Invoke -CommandName Set-WmiInstance -Times 1 -ParameterFilter { $Class -eq 'NTEventLogEventConsumer' }
+        Should -Invoke -CommandName Set-WmiInstance -Times 3 -ParameterFilter { $Class -eq '__FilterToConsumerBinding' }
+    }
+
+    It 'does not install enforcement task when the policy file is missing' {
+        Import-AdapterLockFunction -Name 'Install-EnforcementTask'
+        Mock -CommandName Test-Path -MockWith { $false }
+        Mock -CommandName New-ScheduledTaskAction -MockWith { throw 'Should not create action without policy' }
+        Mock -CommandName Register-ScheduledTask -MockWith { throw 'Should not register task without policy' }
+
+        $result = Install-EnforcementTask -PolicyPath (Join-Path $TestDrive 'missing.json')
+
+        $result | Should -Be $false
+        Should -Invoke -CommandName New-ScheduledTaskAction -Times 0
+        Should -Invoke -CommandName Register-ScheduledTask -Times 0
     }
 
     It 'classifies NIC types' {

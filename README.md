@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.8.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.8.1-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -72,7 +72,7 @@ Hover over the badge for a per-stack breakdown tooltip (for example, `Locked: IP
 
 Right-click any row to: **Lock**, **Unlock**, **Restore from Backup**, **Open in ncpa.cpl**, **Copy MAC**, or **Copy GUID**.
 
-**Export Policy** / **Apply Policy** -- export the current lock state as JSON, then apply it on another machine or at startup via the enforcement task.
+**Export Policy** / **Apply Policy** -- export the current lock state as JSON, then apply locked entries on another machine or at startup via the enforcement task. Entries exported as `partial` are skipped with a warning until their `State` is changed to `locked`.
 
 Changes take effect immediately — no reboot, no service restart.
 
@@ -109,13 +109,13 @@ Changes take effect immediately — no reboot, no service restart.
 # Verify all locks are intact (exits 1 if drift detected)
 .\AdapterLock.ps1 -VerifyLocks -Silent
 
-# Verify and auto-remediate any ACL drift
+# Verify and auto-remediate any ACL drift (exits 0 when post-remediation verification is clean)
 .\AdapterLock.ps1 -VerifyLocks -Remediate -Silent
 
 # Query lock state on remote hosts (requires PS remoting)
 .\AdapterLock.ps1 -Query -ComputerName host1,host2,host3 -Silent
 
-# Install WMI drift watcher (logs EventId 1002 on registry changes)
+# Install WMI drift watcher (logs EventId 1002 on Tcpip, Tcpip6, and NetBT registry tree changes)
 .\AdapterLock.ps1 -InstallWatcher
 
 # Remove the WMI drift watcher
@@ -125,7 +125,7 @@ Changes take effect immediately — no reboot, no service restart.
 .\AdapterLock.ps1 -Report -ComputerName (Get-Content hosts.txt) -OutputFile report.html
 ```
 
-Exit codes: `0` = success, `1` = adapter not found / operation failed / drift detected, `2` = bad arguments.
+Exit codes: `0` = success, `1` = adapter not found / operation failed / drift still detected after remediation, `2` = bad arguments.
 
 ## Verifying the lock
 
@@ -142,7 +142,7 @@ Opening TCP/IPv4 properties in `ncpa.cpl` and clicking OK on a changed value wil
 
 - **Log:** `%APPDATA%\AdapterLock\adapterlock.log` — every lock/unlock operation
 - **SDDL backups:** `%ProgramData%\AdapterLock\Backups\` — ACL snapshot taken before each change; files are named `{Guid}.{keyTag}.{timestamp}.sddl`
-- **Event Log:** Windows Application log, source `AdapterLock`, EventId 1001 (lock/unlock), EventId 1002 (WMI drift watcher)
+- **Event Log:** Windows Application log, source `AdapterLock`, EventId 1001 (lock/unlock), EventId 1002 (WMI drift watcher across Tcpip/Tcpip6/NetBT trees)
 
 Use `-RestoreBackup -Guid "{...}" -Silent` or the row context menu to restore the latest saved SDDL backup for an adapter.
 
@@ -168,4 +168,4 @@ Invoke-ScriptAnalyzer -Path .\AdapterLock.ps1 -Severity Error,Warning
 
 ## Version
 
-v0.8.0
+v0.8.1

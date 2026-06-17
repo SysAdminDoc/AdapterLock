@@ -4,43 +4,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
 
 ## Research-Driven Additions
 
-### P0
-
-- [ ] P0 -- Replace the WMI drift watcher with full-stack hierarchy coverage
-  Why: The watcher currently monitors only `Tcpip` with a value-change query while AdapterLock enforces `Tcpip`, `Tcpip6`, and `NetBT`.
-  Evidence: `AdapterLock.ps1:405`, `AdapterLock.ps1:429`, `AdapterLock.ps1:612`; Microsoft `RegistryTreeChangeEvent`.
-  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
-  Acceptance: installing the watcher creates coverage for all enforced stack keys, tests assert the WQL/classes used, EventId 1002 documents the exact watched surfaces, and drift on IPv4, IPv6, or NetBT is reported.
-  Complexity: M
-
-- [ ] P0 -- Make policy import/apply state-safe
-  Why: Exported `partial` entries are currently applied as full locks, and malformed states or duplicate targets are not rejected.
-  Evidence: `AdapterLock.ps1:315`, `AdapterLock.ps1:321`, `AdapterLock.ps1:345`, `AdapterLock.ps1:1075`, `AdapterLock.ps1:2125`.
-  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
-  Acceptance: policy validation rejects invalid state/GUID/MAC/duplicate targets, `partial` entries require explicit remediation or are skipped with a warning, CLI and GUI show a before/apply summary, and `-DryRun -LoadPolicy` performs no ACL writes.
-  Complexity: M
-
-- [ ] P0 -- HTML-encode fleet report output
-  Why: Remote adapter and host fields are interpolated directly into generated HTML.
-  Evidence: `AdapterLock.ps1:915`, `AdapterLock.ps1:922`; OWASP output encoding guidance.
-  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`.
-  Acceptance: report rows encode `<`, `>`, `"`, `'`, and `&`; a Pester test proves hostile adapter names render as text, not markup; report layout remains unchanged.
-  Complexity: S
-
-- [ ] P0 -- Re-verify after `-VerifyLocks -Remediate` and return truthful exit codes
-  Why: Remediation currently exits `1` based on pre-fix drift even when `Lock-Adapter` succeeds.
-  Evidence: `AdapterLock.ps1:1091`, `AdapterLock.ps1:1100`; Microsoft Intune remediation detection/remediation model.
-  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
-  Acceptance: remediation runs a second integrity check, exits `0` only when post-fix state is clean, exits `1` when drift remains, and logs both original drift and final state.
-  Complexity: S
-
-- [ ] P0 -- Fail closed when installing enforcement without a policy
-  Why: The startup task currently falls back to `-DryRun -Silent`, which looks installed but enforces nothing.
-  Evidence: `AdapterLock.ps1:371`, `AdapterLock.ps1:379`; README startup-task workflow.
-  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
-  Acceptance: `-InstallTask` errors with a clear message when no policy exists, or explicitly exports the current locked state before registering; no installed enforcement task may be dry-run by default.
-  Complexity: S
-
 ### P1
 
 - [ ] P1 -- Move WPF scan and lock operations to background workers
