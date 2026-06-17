@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.7.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.8.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -53,25 +53,26 @@ The registry ACL technique is the real solution and what this tool automates.
 1. The tool self-elevates and hides its console
 2. Type in the **filter box** to narrow adapters by name, description, MAC, IPv4, or GUID
 3. Select one or more adapters in the grid
-4. Click **Lock Selected** or **Unlock Selected** — the GUI asks for confirmation before changing ACLs
+4. Click **Lock Selected** or **Unlock Selected** -- the GUI shows a styled safety confirmation before changing ACLs
 5. Lock state is verified by re-reading the ACL and shown in the `Lock` column
-6. Click **Show Hidden** to reveal unplugged/ghost adapters (shown with "(hidden)" label)
+6. Use the search summary, lock counters, and empty states to confirm what is currently visible
+7. Click **Show Hidden** to reveal unplugged/ghost adapters (shown with "(hidden)" label)
 
 The `Mode` column shows whether the adapter is DHCP or Static. Locking a DHCP adapter shows a warning because lease renewals may be blocked from updating registry values.
 
-The **Lock** badge is colour-coded:
+The **Lock** badge is color-coded:
 
 | Badge | Meaning |
 |-------|---------|
-| 🟢 Unlocked | No deny ACE on any stack key |
-| 🔴 LOCKED | Deny ACE present on all applicable stack keys |
-| 🟡 PARTIAL | Mismatch — one IP stack locked but not the other |
+| Unlocked | No AdapterLock deny ACE on any stack key |
+| LOCKED | Deny ACE present on every applicable stack key |
+| PARTIAL | Mismatch -- one or more applicable stack keys are still open |
 
-Hover over the badge for a per-stack breakdown tooltip (e.g. `v4 + v6`, `v4 only (!)`).
+Hover over the badge for a per-stack breakdown tooltip (for example, `Locked: IPv4 + IPv6 + NetBT` or `Locked: IPv4 + IPv6; Open: NetBT`).
 
 Right-click any row to: **Lock**, **Unlock**, **Restore from Backup**, **Open in ncpa.cpl**, **Copy MAC**, or **Copy GUID**.
 
-**Save Policy** / **Load Policy** — export the current lock state as JSON, then apply it on another machine or at startup via the enforcement task.
+**Export Policy** / **Apply Policy** -- export the current lock state as JSON, then apply it on another machine or at startup via the enforcement task.
 
 Changes take effect immediately — no reboot, no service restart.
 
@@ -167,4 +168,4 @@ Invoke-ScriptAnalyzer -Path .\AdapterLock.ps1 -Severity Error,Warning
 
 ## Version
 
-v0.7.0
+v0.8.0

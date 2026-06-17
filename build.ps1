@@ -8,6 +8,24 @@ param(
 $ErrorActionPreference = 'Stop'
 $scriptPath = Join-Path $PSScriptRoot 'AdapterLock.ps1'
 
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $packageManagement = Get-Module -ListAvailable PackageManagement |
+        Where-Object { $_.Path -like '*WindowsPowerShell*' } |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+    if ($packageManagement) {
+        Import-Module $packageManagement.Path -Force -ErrorAction Stop
+    }
+
+    $powerShellGet = Get-Module -ListAvailable PowerShellGet |
+        Where-Object { $_.Path -like '*WindowsPowerShell*' } |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+    if ($powerShellGet) {
+        Import-Module $powerShellGet.Path -Force -ErrorAction Stop
+    }
+}
+
 Write-Host '--- Validating script metadata ---'
 $info = Test-ScriptFileInfo -Path $scriptPath -ErrorAction Stop
 Write-Host "  Version : $($info.Version)"
@@ -26,7 +44,20 @@ if ($help.Synopsis -and $help.Synopsis -notmatch '^\s*$') {
 Write-Host '--- Running Pester tests ---'
 $testFile = Join-Path $PSScriptRoot 'AdapterLock.Tests.ps1'
 if (Test-Path $testFile) {
-    $result = Invoke-Pester -Script $testFile -PassThru -Quiet
+    $pester = Get-Module -ListAvailable Pester | Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $pester) {
+        throw 'Pester module is not installed'
+    }
+    Import-Module $pester.Path -Force -ErrorAction Stop
+    if ($pester.Version.Major -ge 5) {
+        $config = New-PesterConfiguration
+        $config.Run.Path = $testFile
+        $config.Run.PassThru = $true
+        $config.Output.Verbosity = 'None'
+        $result = Invoke-Pester -Configuration $config
+    } else {
+        $result = Invoke-Pester -Script $testFile -PassThru -Quiet
+    }
     if ($result.FailedCount -gt 0) {
         throw "$($result.FailedCount) Pester test(s) failed"
     }
