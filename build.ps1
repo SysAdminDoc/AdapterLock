@@ -178,6 +178,36 @@ function New-PackageProvenance {
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $OutputFile -Encoding UTF8 -ErrorAction Stop
 }
 
+function Invoke-AnalyzerGate {
+    param(
+        [string]$Path,
+        [string]$SettingsPath
+    )
+
+    if (-not (Test-Path -LiteralPath $SettingsPath -PathType Leaf)) {
+        throw "PSScriptAnalyzer settings not found: $SettingsPath"
+    }
+
+    $analyzer = Get-Module -ListAvailable PSScriptAnalyzer |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+    if (-not $analyzer) {
+        throw 'PSScriptAnalyzer module is not installed'
+    }
+    Import-Module $analyzer.Path -Force -ErrorAction Stop
+
+    $results = @(Invoke-ScriptAnalyzer -Path $Path -Settings $SettingsPath -Severity Error,Warning -ErrorAction Stop)
+    if ($results.Count -gt 0) {
+        $summary = $results |
+            Sort-Object Severity,RuleName,Line |
+            Select-Object -First 20 |
+            ForEach-Object { "{0}:{1} {2} {3}" -f $_.ScriptName, $_.Line, $_.RuleName, $_.Message }
+        throw "PSScriptAnalyzer found $($results.Count) warning/error result(s):`n$($summary -join "`n")"
+    }
+
+    Write-Host "  PSScriptAnalyzer: OK ($($analyzer.Version))"
+}
+
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     $packageManagement = Get-Module -ListAvailable PackageManagement |
         Where-Object { $_.Path -like '*WindowsPowerShell*' } |
@@ -210,6 +240,10 @@ if ($help.Synopsis -and $help.Synopsis -notmatch '^\s*$') {
 } else {
     throw 'Comment-based help missing synopsis'
 }
+
+Write-Host '--- Running PSScriptAnalyzer ---'
+$settingsPath = Join-Path $PSScriptRoot '.vscode\PSScriptAnalyzer.psd1'
+Invoke-AnalyzerGate -Path $scriptPath -SettingsPath $settingsPath
 
 Write-Host '--- Running Pester tests ---'
 $testFile = Join-Path $PSScriptRoot 'AdapterLock.Tests.ps1'

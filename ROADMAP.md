@@ -4,15 +4,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
 
 ## Research-Driven Additions
 
-### P1
-
-- [ ] P1 -- Gate builds with analyzer and high-risk behavior tests
-  Why: README documents ScriptAnalyzer, but `build.ps1` does not run it; current tests miss report encoding, watcher WQL, policy state safety, and remediation exit behavior.
-  Evidence: `README.md:151`, `build.ps1:29`, `build.ps1:44`, `AdapterLock.Tests.ps1:252`.
-  Touches: `build.ps1`, `.vscode/PSScriptAnalyzer.psd1`, `AdapterLock.Tests.ps1`.
-  Acceptance: `.\build.ps1 -Validate` runs PSScriptAnalyzer with repo settings and fails on warnings/errors, and Pester covers WMI watcher coverage, HTML encoding, policy validation/apply planning, task fail-closed behavior, and remediate re-check.
-  Complexity: M
-
 ### P2
 
 - [ ] P2 -- Centralize local and remote lock-state evaluation

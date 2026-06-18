@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.7 - 2026-06-17
+
+### Changed
+- **Build validation gate** -- `build.ps1 -Validate` now runs PSScriptAnalyzer with the repository settings and fails on warnings/errors before running the existing high-risk behavior Pester suite.
+
 ## v0.8.6 - 2026-06-17
 
 ### Changed
