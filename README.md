@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.8.7-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.8.8-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -185,4 +185,4 @@ Package builds emit `AdapterLock-v<version>.sha256.txt` and `AdapterLock-v<versi
 
 ## Version
 
-v0.8.7
+v0.8.8

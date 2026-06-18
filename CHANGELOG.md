@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.8 - 2026-06-18
+
+### Changed
+- **Shared lock-state evaluator** -- local UI rows, CLI integrity checks, reports, and remote query output now use one lock-state schema for `LOCKED`, `PARTIAL`, and `Unlocked` semantics.
+
 ## v0.8.7 - 2026-06-17
 
 ### Changed

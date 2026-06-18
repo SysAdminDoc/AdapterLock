@@ -72,7 +72,7 @@ Describe 'AdapterLock core functions' {
     }
 
     It 'detects deny ACEs in Test-AdapterLockedDetailed' {
-        Import-AdapterLockFunction -Name 'Test-AdapterLockedDetailed'
+        Import-AdapterLockFunction -Name 'Get-AdapterLockState', 'Test-AdapterLockedDetailed'
         Mock -CommandName Test-Path -MockWith { $true }
         Mock -CommandName Get-Acl -MockWith { New-FakeAcl }
 
@@ -190,16 +190,16 @@ Describe 'AdapterLock core functions' {
         Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
 
         $badStatePath = Join-Path $TestDrive 'bad-state.json'
-        @{ Version = '0.8.7'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @{ Version = '0.8.8'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
         @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
 
         $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
-        @{ Version = '0.8.7'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @{ Version = '0.8.8'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
         @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
 
         $duplicatePath = Join-Path $TestDrive 'duplicate.json'
         @{
-            Version = '0.8.7'
+            Version = '0.8.8'
             Adapters = @(
                 @{ Name = 'Ethernet'; State = 'locked' }
                 @{ Name = 'Ethernet'; State = 'locked' }
@@ -272,7 +272,7 @@ Describe 'AdapterLock core functions' {
     }
 
     It 'detects drift when adapter is partially locked' {
-        Import-AdapterLockFunction -Name 'Test-AdapterLockedDetailed', 'Test-AdapterLocked', 'Test-LockIntegrity', 'Get-InterfaceKeyPath', 'Import-LockPolicy', 'Write-EvtLog', 'Get-LockBadgeFromDetail', 'Get-LockDetailText'
+        Import-AdapterLockFunction -Name 'Get-AdapterLockState', 'Test-AdapterLockedDetailed', 'Test-AdapterLocked', 'Test-LockIntegrity', 'Get-InterfaceKeyPath', 'Import-LockPolicy', 'Write-EvtLog', 'Get-LockBadgeFromDetail', 'Get-LockDetailText'
         Mock -CommandName Get-NetAdapter -MockWith {
             @([pscustomobject]@{
                 Name = 'Ethernet'
@@ -449,7 +449,7 @@ Describe 'AdapterLock core functions' {
     }
 
     It 'keeps usable remote query rows when one host fails' {
-        Import-AdapterLockFunction -Name 'Invoke-RemoteLockQuery'
+        Import-AdapterLockFunction -Name 'Get-AdapterLockState', 'Invoke-RemoteLockQuery'
         Mock -CommandName Invoke-Command -MockWith {
             if ($ComputerName -eq 'bad-host') { throw 'offline' }
             [pscustomobject]@{
@@ -466,6 +466,36 @@ Describe 'AdapterLock core functions' {
 
         $results.Count | Should -Be 1
         $results[0].Computer | Should -Be 'good-host'
+    }
+
+    It 'uses the shared lock-state schema for remote query rows' {
+        Import-AdapterLockFunction -Name 'Get-AdapterLockState', 'Invoke-RemoteLockQuery'
+        Mock -CommandName Invoke-Command -MockWith {
+            param($ComputerName, $ScriptBlock, $ArgumentList)
+            & $ScriptBlock $ArgumentList
+        }
+        Mock -CommandName Get-NetAdapter -MockWith {
+            @([pscustomobject]@{
+                Name = 'Ethernet'
+                InterfaceGuid = '{11111111-1111-1111-1111-111111111111}'
+            })
+        }
+        Mock -CommandName Test-Path -MockWith { $true }
+        Mock -CommandName Get-Acl -MockWith {
+            if ($LiteralPath -like '*NetBT*') {
+                New-FakeAcl -AccessControlType 'Allow'
+            } else {
+                New-FakeAcl
+            }
+        }
+        Mock -CommandName Get-ItemPropertyValue -MockWith { 0 }
+
+        $results = @(Invoke-RemoteLockQuery -Targets @('host1'))
+
+        $results.Count | Should -Be 1
+        $results[0].Locked | Should -Be 'PARTIAL'
+        $results[0].Detail | Should -Be 'Locked: IPv4 + IPv6; Open: NetBT'
+        $results[0].Mode | Should -Be 'Static'
     }
 
     It 'defines WMI tree watchers for every enforced registry surface' {
@@ -541,6 +571,7 @@ Describe 'AdapterLock core functions' {
             'Get-BackupRestorePath',
             'Invoke-SddlRestore',
             'Restore-AdapterSddl',
+            'Get-AdapterLockState',
             'Test-AdapterLockedDetailed',
             'Get-LockBadgeFromDetail',
             'Get-LockDetailText',

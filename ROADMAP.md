@@ -6,13 +6,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
 
 ### P2
 
-- [ ] P2 -- Centralize local and remote lock-state evaluation
-  Why: Remote query duplicates the local ACL/key-state logic, so future stack or identity-rule changes can drift.
-  Evidence: `AdapterLock.ps1:610`, `AdapterLock.ps1:821`.
-  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`.
-  Acceptance: local UI, CLI verify, HTML/JSON/CSV report, and remote query use one shared lock-state schema with identical `LOCKED`/`PARTIAL`/`Unlocked` semantics.
-  Complexity: M
-
 - [ ] P2 -- Add CLI adapter discovery and ambiguity feedback
   Why: CLI users must know exact names, MACs, or GUIDs before acting, while competitor and community issues show adapter discovery/refresh is a recurring failure point.
   Evidence: `AdapterLock.ps1:1137`, `AdapterLock.ps1:1144`; Simple IP Config issue #206; Net Profiles mod dynamic-interface issue #75.

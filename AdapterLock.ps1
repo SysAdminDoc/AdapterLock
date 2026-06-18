@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.8.7
+.VERSION 0.8.8
 .GUID fd499ba1-8ce6-4512-877e-9dede49777f5
 .AUTHOR SysAdminDoc
 .DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
@@ -7,7 +7,7 @@
 .TAGS networking adapter lock registry ACL IP security PACS
 .LICENSEURI https://github.com/SysAdminDoc/AdapterLock/blob/master/LICENSE
 .PROJECTURI https://github.com/SysAdminDoc/AdapterLock
-.RELEASENOTES Gates validation with repo PSScriptAnalyzer settings plus high-risk behavior tests.
+.RELEASENOTES Centralizes lock-state evaluation for local UI, CLI verification, reports, and remote query output.
 #>
 
 <#
@@ -211,7 +211,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.8.7'
+$script:Version   = '0.8.8'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -923,39 +923,105 @@ function Restore-AdapterSddl {
     return $false
 }
 
-function Test-AdapterLockedDetailed {
+function Get-AdapterLockState {
     param([string]$Guid)
-    $v4 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$Guid"
-    $v6 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\$Guid"
-    $nb = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$Guid"
+
+    $stackDefinitions = @(
+        [pscustomobject]@{
+            Name = 'IPv4'
+            Key = 'V4'
+            Path = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$Guid"
+            Required = $true
+        }
+        [pscustomobject]@{
+            Name = 'IPv6'
+            Key = 'V6'
+            Path = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\$Guid"
+            Required = $false
+        }
+        [pscustomobject]@{
+            Name = 'NetBT'
+            Key = 'NetBT'
+            Path = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$Guid"
+            Required = $false
+        }
+    )
 
     $isDeny = {
-        param([string]$path, [bool]$exists)
-        if (-not $exists) { return $false }
+        param([string]$Path)
         try {
-            $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+            $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
             return [bool]($acl.Access | Where-Object {
                 $_.AccessControlType -eq 'Deny' -and
                 $_.IdentityReference.Value -match 'Authenticated Users|Everyone|BUILTIN\\Users'
             })
         } catch { return $false }
     }
-    $v4Exists = Test-Path -LiteralPath $v4
-    $v6Exists = Test-Path -LiteralPath $v6
-    $nbExists = Test-Path -LiteralPath $nb
+
+    $stacks = foreach ($definition in $stackDefinitions) {
+        $exists = [bool](Test-Path -LiteralPath $definition.Path -ErrorAction SilentlyContinue)
+        $locked = if ($exists) { [bool](& $isDeny $definition.Path) } else { $false }
+        [pscustomobject]@{
+            Name = $definition.Name
+            Key = $definition.Key
+            Path = $definition.Path
+            Required = $definition.Required
+            Exists = $exists
+            Locked = $locked
+        }
+    }
+
+    $v4 = $stacks | Where-Object { $_.Key -eq 'V4' } | Select-Object -First 1
+    $v6 = $stacks | Where-Object { $_.Key -eq 'V6' } | Select-Object -First 1
+    $netBt = $stacks | Where-Object { $_.Key -eq 'NetBT' } | Select-Object -First 1
+    $hasAnyLock = [bool]($stacks | Where-Object { $_.Locked } | Select-Object -First 1)
+    $fullyLocked = [bool]$v4.Locked -and ([bool]$v6.Locked -or -not [bool]$v6.Exists) -and ([bool]$netBt.Locked -or -not [bool]$netBt.Exists)
+    $badge = if ($fullyLocked) { 'LOCKED' } elseif ($hasAnyLock) { 'PARTIAL' } else { 'Unlocked' }
+
+    $lockedParts = New-Object System.Collections.Generic.List[string]
+    $openParts = New-Object System.Collections.Generic.List[string]
+    foreach ($stack in $stacks) {
+        if ($stack.Locked) {
+            $lockedParts.Add($stack.Name)
+        } elseif ($stack.Exists -or $stack.Required) {
+            $openParts.Add($stack.Name)
+        }
+    }
+    $detailText = if ($lockedParts.Count -eq 0) {
+        'No AdapterLock deny ACEs'
+    } else {
+        $text = "Locked: $($lockedParts -join ' + ')"
+        if ($openParts.Count -gt 0) {
+            $text += "; Open: $($openParts -join ' + ')"
+        }
+        $text
+    }
 
     return [pscustomobject]@{
-        V4Locked    = (& $isDeny $v4 $v4Exists)
-        V4Exists    = $v4Exists
-        V6Locked    = (& $isDeny $v6 $v6Exists)
-        V6Exists    = $v6Exists
-        NetBTLocked = (& $isDeny $nb $nbExists)
-        NetBTExists = $nbExists
+        GUID = $Guid
+        LockBadge = $badge
+        LockDetail = $detailText
+        IsFullyLocked = $fullyLocked
+        IsPartial = ($badge -eq 'PARTIAL')
+        HasAnyLock = $hasAnyLock
+        Stacks = @($stacks)
+        V4Locked = [bool]$v4.Locked
+        V4Exists = [bool]$v4.Exists
+        V6Locked = [bool]$v6.Locked
+        V6Exists = [bool]$v6.Exists
+        NetBTLocked = [bool]$netBt.Locked
+        NetBTExists = [bool]$netBt.Exists
     }
+}
+
+function Test-AdapterLockedDetailed {
+    param([string]$Guid)
+    return Get-AdapterLockState -Guid $Guid
 }
 
 function Get-LockBadgeFromDetail {
     param($Detail)
+    if ($Detail.PSObject.Properties['LockBadge']) { return $Detail.LockBadge }
     $v4Ready = [bool]$Detail.V4Locked
     $v6Ready = [bool]$Detail.V6Locked -or -not [bool]$Detail.V6Exists
     $netBtReady = [bool]$Detail.NetBTLocked -or -not [bool]$Detail.NetBTExists
@@ -966,6 +1032,7 @@ function Get-LockBadgeFromDetail {
 
 function Get-LockDetailText {
     param($Detail)
+    if ($Detail.PSObject.Properties['LockDetail']) { return $Detail.LockDetail }
     $locked = New-Object System.Collections.Generic.List[string]
     $open = New-Object System.Collections.Generic.List[string]
 
@@ -990,6 +1057,7 @@ function Get-LockDetailText {
 function Test-AdapterLocked {
     param([string]$Guid)
     $d = Test-AdapterLockedDetailed -Guid $Guid
+    if ($d.PSObject.Properties['HasAnyLock']) { return [bool]$d.HasAnyLock }
     return ($d.V4Locked -or $d.V6Locked -or $d.NetBTLocked)
 }
 
@@ -1171,7 +1239,11 @@ function Test-LockIntegrity {
 function Invoke-RemoteLockQuery {
     param([string[]]$Targets)
 
+    $lockStateFunction = ${function:Get-AdapterLockState}.ToString()
     $queryBlock = {
+        param([string]$LockStateFunction)
+        . ([scriptblock]::Create("function Get-AdapterLockState {`n$LockStateFunction`n}"))
+
         $results = @()
         try {
             $adapters = Get-NetAdapter -IncludeHidden:$false -ErrorAction Stop
@@ -1188,41 +1260,7 @@ function Invoke-RemoteLockQuery {
         foreach ($a in $adapters) {
             $guid = $a.InterfaceGuid
             $v4 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
-            $v6 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\$guid"
-            $nb = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$guid"
-
-            $isDeny = {
-                param([string]$path)
-                if (-not (Test-Path -LiteralPath $path)) { return $false }
-                try {
-                    $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
-                    return [bool]($acl.Access | Where-Object {
-                        $_.AccessControlType -eq 'Deny' -and
-                        $_.IdentityReference.Value -match 'Authenticated Users|Everyone|BUILTIN\\Users'
-                    })
-                } catch { return $false }
-            }
-            $v4L = & $isDeny $v4
-            $v6E = Test-Path -LiteralPath $v6
-            $v6L = & $isDeny $v6
-            $nbE = Test-Path -LiteralPath $nb
-            $nbL = & $isDeny $nb
-
-            $locked = $v4L -and ($v6L -or -not $v6E) -and ($nbL -or -not $nbE)
-            $partial = -not $locked -and ($v4L -or $v6L -or $nbL)
-            $badge = if ($locked) { 'LOCKED' } elseif ($partial) { 'PARTIAL' } else { 'Unlocked' }
-            $lockedParts = @()
-            $openParts = @()
-            if ($v4L) { $lockedParts += 'IPv4' } else { $openParts += 'IPv4' }
-            if ($v6L) { $lockedParts += 'IPv6' } elseif ($v6E) { $openParts += 'IPv6' }
-            if ($nbL) { $lockedParts += 'NetBT' } elseif ($nbE) { $openParts += 'NetBT' }
-            $detail = if ($lockedParts.Count -eq 0) {
-                '-'
-            } else {
-                $text = "Locked: $($lockedParts -join ' + ')"
-                if ($openParts.Count -gt 0) { $text += "; Open: $($openParts -join ' + ')" }
-                $text
-            }
+            $lockState = Get-AdapterLockState -Guid $guid
 
             $mode = 'Unknown'
             try {
@@ -1236,8 +1274,8 @@ function Invoke-RemoteLockQuery {
                 Computer = $env:COMPUTERNAME
                 Adapter  = $a.Name
                 GUID     = $guid
-                Locked   = $badge
-                Detail   = $detail
+                Locked   = $lockState.LockBadge
+                Detail   = $lockState.LockDetail
                 Mode     = $mode
             }
         }
@@ -1248,7 +1286,7 @@ function Invoke-RemoteLockQuery {
     $results = @()
     foreach ($target in $Targets) {
         try {
-            $raw = Invoke-Command -ComputerName $target -ScriptBlock $queryBlock -ErrorAction Stop
+            $raw = Invoke-Command -ComputerName $target -ScriptBlock $queryBlock -ArgumentList $lockStateFunction -ErrorAction Stop
             $results += @($raw | Select-Object Computer, Adapter, GUID, Locked, Detail, Mode)
         } catch {
             Write-AppLog "Remote query failed for $target`: $($_.Exception.Message)" 'ERROR'
@@ -1830,7 +1868,7 @@ if ($script:IsCli) {
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="AdapterLock" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-                        <TextBlock x:Name="VersionText" Text=" v0.8.7" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
+                        <TextBlock x:Name="VersionText" Text=" v0.8.8" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
                     </StackPanel>
                     <TextBlock Margin="0,6,24,0"
                                Text="Protect static NIC configuration with adapter-specific registry ACL enforcement. Select adapters, review state, and apply lock policies without changing unrelated interfaces."
@@ -2578,6 +2616,7 @@ function Get-UiWorkerScript {
         'Get-BackupRestorePath',
         'Invoke-SddlRestore',
         'Restore-AdapterSddl',
+        'Get-AdapterLockState',
         'Test-AdapterLockedDetailed',
         'Get-LockBadgeFromDetail',
         'Get-LockDetailText',
