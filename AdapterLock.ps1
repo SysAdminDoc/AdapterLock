@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.8.8
+.VERSION 0.8.9
 .GUID fd499ba1-8ce6-4512-877e-9dede49777f5
 .AUTHOR SysAdminDoc
 .DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
@@ -7,7 +7,7 @@
 .TAGS networking adapter lock registry ACL IP security PACS
 .LICENSEURI https://github.com/SysAdminDoc/AdapterLock/blob/master/LICENSE
 .PROJECTURI https://github.com/SysAdminDoc/AdapterLock
-.RELEASENOTES Centralizes lock-state evaluation for local UI, CLI verification, reports, and remote query output.
+.RELEASENOTES Adds CLI adapter discovery output and safer ambiguous adapter resolution.
 #>
 
 <#
@@ -47,6 +47,9 @@
 
 .PARAMETER DryRun
     Preview which registry keys would be modified without writing any ACL changes.
+
+.PARAMETER ListAdapters
+    List visible and hidden adapters with stable identifiers and lock state for CLI discovery.
 
 .PARAMETER LoadPolicy
     Path to a JSON policy file to load and enforce. Entries with State=locked are applied; partial entries are skipped with a warning.
@@ -113,6 +116,10 @@
     Preview which registry keys would be locked without making changes.
 
 .EXAMPLE
+    .\AdapterLock.ps1 -ListAdapters -OutputFormat Json -Silent
+    List visible and hidden adapters with identifiers for scripting.
+
+.EXAMPLE
     .\AdapterLock.ps1 -LoadPolicy C:\policy.json -Silent
     Load and enforce a JSON policy file.
 
@@ -133,6 +140,7 @@ param(
     [string]$Guid,
     [switch]$Silent,
     [switch]$DryRun,
+    [switch]$ListAdapters,
     [string]$LoadPolicy,
     [switch]$RestoreBackup,
     [switch]$ListBackups,
@@ -153,7 +161,7 @@ param(
 )
 
 
-$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $ListBackups.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent -or $InstallWatcher.IsPresent -or $UninstallWatcher.IsPresent -or $Report.IsPresent
+$script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $ListAdapters.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $ListBackups.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent -or $InstallWatcher.IsPresent -or $UninstallWatcher.IsPresent -or $Report.IsPresent
 $script:IsDryRun = $DryRun.IsPresent
 
 
@@ -211,7 +219,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.8.8'
+$script:Version   = '0.8.9'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -1460,6 +1468,160 @@ function Get-AdapterRow {
     return $rows
 }
 
+function Get-AdapterInventory {
+    $records = @()
+    try {
+        $adapters = @(Get-NetAdapter -IncludeHidden:$true -ErrorAction Stop | Sort-Object ifIndex)
+    } catch {
+        Write-AppLog "Get-NetAdapter failed: $($_.Exception.Message)" 'ERROR'
+        return @()
+    }
+
+    $visibleGuids = @{}
+    Get-NetAdapter -IncludeHidden:$false -ErrorAction SilentlyContinue | ForEach-Object {
+        $visibleGuids[$_.InterfaceGuid] = $true
+    }
+
+    foreach ($adapter in $adapters) {
+        $guid = [string]$adapter.InterfaceGuid
+        $hidden = -not $visibleGuids.ContainsKey($guid)
+        $dhcpState = Get-AdapterDhcpState -Guid $guid
+        $lockState = Get-AdapterLockState -Guid $guid
+        $records += [pscustomobject]@{
+            Computer = $env:COMPUTERNAME
+            Name = [string]$adapter.Name
+            Description = [string]$adapter.InterfaceDescription
+            MAC = [string]$adapter.MacAddress
+            GUID = $guid
+            IfIndex = $adapter.ifIndex
+            Status = [string]$adapter.Status
+            Visibility = if ($hidden) { 'Hidden' } else { 'Visible' }
+            Hidden = [bool]$hidden
+            Mode = $dhcpState.Mode
+            LockState = $lockState.LockBadge
+            Detail = $lockState.LockDetail
+        }
+    }
+    return $records
+}
+
+function Select-AdapterInventoryRecord {
+    param([object[]]$Data)
+    return $Data | Select-Object Computer, Name, Description, MAC, GUID, IfIndex, Status, Visibility, Hidden, Mode, LockState, Detail
+}
+
+function Export-AdapterInventoryData {
+    param(
+        [object[]]$Data,
+        [ValidateSet('Table','Json','Csv')]
+        [string]$Format = 'Table',
+        [string]$OutputFile = ''
+    )
+
+    $records = @(Select-AdapterInventoryRecord -Data $Data)
+    switch ($Format) {
+        'Json' {
+            $content = $records | ConvertTo-Json -Depth 4
+            if ($OutputFile) {
+                Set-Content -LiteralPath $OutputFile -Value $content -Encoding UTF8 -ErrorAction Stop
+                Write-AppLog "Adapter inventory JSON written: $OutputFile ($($records.Count) rows)" 'OK'
+            } else {
+                Write-Output $content
+            }
+        }
+        'Csv' {
+            if ($OutputFile) {
+                $records | Export-Csv -LiteralPath $OutputFile -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+                Write-AppLog "Adapter inventory CSV written: $OutputFile ($($records.Count) rows)" 'OK'
+            } else {
+                $records | ConvertTo-Csv -NoTypeInformation
+            }
+        }
+        default {
+            if ($OutputFile) {
+                $records |
+                    Format-Table Computer, Name, MAC, GUID, Status, Visibility, Mode, LockState -AutoSize |
+                    Out-String |
+                    Set-Content -LiteralPath $OutputFile -Encoding UTF8 -ErrorAction Stop
+                Write-AppLog "Adapter inventory table written: $OutputFile ($($records.Count) rows)" 'OK'
+            } else {
+                $records | Format-Table Computer, Name, MAC, GUID, Status, Visibility, Mode, LockState -AutoSize
+            }
+        }
+    }
+}
+
+function Get-StringDistance {
+    param([string]$Left, [string]$Right)
+    if ($null -eq $Left) { $Left = '' }
+    if ($null -eq $Right) { $Right = '' }
+    $leftLength = $Left.Length
+    $rightLength = $Right.Length
+    if ($leftLength -eq 0) { return $rightLength }
+    if ($rightLength -eq 0) { return $leftLength }
+
+    $matrix = New-Object 'int[,]' ($leftLength + 1), ($rightLength + 1)
+    for ($i = 0; $i -le $leftLength; $i++) { $matrix[$i,0] = $i }
+    for ($j = 0; $j -le $rightLength; $j++) { $matrix[0,$j] = $j }
+
+    for ($i = 1; $i -le $leftLength; $i++) {
+        for ($j = 1; $j -le $rightLength; $j++) {
+            $cost = if ($Left[($i - 1)] -eq $Right[($j - 1)]) { 0 } else { 1 }
+            $delete = $matrix[($i - 1),$j] + 1
+            $insert = $matrix[$i,($j - 1)] + 1
+            $replace = $matrix[($i - 1),($j - 1)] + $cost
+            $matrix[$i,$j] = [Math]::Min([Math]::Min($delete, $insert), $replace)
+        }
+    }
+    return $matrix[$leftLength,$rightLength]
+}
+
+function Format-AdapterCandidate {
+    param($Adapter)
+    return "{0} | MAC={1} | GUID={2} | Status={3}" -f $Adapter.Name, $Adapter.MacAddress, $Adapter.InterfaceGuid, $Adapter.Status
+}
+
+function Get-AdapterMatchCandidate {
+    param(
+        [object[]]$Adapters,
+        [string]$Query,
+        [int]$Max = 5
+    )
+    if (-not $Query) { return @($Adapters | Select-Object -First $Max) }
+
+    $needle = $Query.ToLowerInvariant()
+    $needleMac = $Query -replace '[:\-\s]', ''
+    $ranked = foreach ($adapter in $Adapters) {
+        $name = ([string]$adapter.Name).ToLowerInvariant()
+        $description = ([string]$adapter.InterfaceDescription).ToLowerInvariant()
+        $mac = ([string]$adapter.MacAddress) -replace '[:\-\s]', ''
+        $guidText = ([string]$adapter.InterfaceGuid).ToLowerInvariant()
+        $distance = Get-StringDistance -Left $needle -Right $name
+        if ($description.Contains($needle)) { $distance = [Math]::Min($distance, 2) }
+        if ($name.Contains($needle)) { $distance = [Math]::Min($distance, 1) }
+        if ($needleMac -and $mac.Contains($needleMac)) { $distance = [Math]::Min($distance, 1) }
+        if ($guidText.Contains($needle)) { $distance = [Math]::Min($distance, 1) }
+        [pscustomobject]@{
+            Adapter = $adapter
+            Score = $distance
+        }
+    }
+    return @($ranked | Sort-Object Score, @{ Expression = { $_.Adapter.Name } } | Select-Object -First $Max | ForEach-Object { $_.Adapter })
+}
+
+function Write-AdapterMatchCandidate {
+    param(
+        [object[]]$Adapters,
+        [string]$Query
+    )
+    $candidates = @(Get-AdapterMatchCandidate -Adapters $Adapters -Query $Query)
+    if ($candidates.Count -eq 0) { return }
+    Write-AppLog 'Closest visible adapter candidates:' 'WARN'
+    foreach ($candidate in $candidates) {
+        Write-AppLog ("  " + (Format-AdapterCandidate -Adapter $candidate)) 'WARN'
+    }
+}
+
 function Find-AdapterByIdentifier {
     param([string]$ByName, [string]$ByMac, [string]$ByGuid)
     try { $adapters = Get-NetAdapter -IncludeHidden:$false -ErrorAction Stop }
@@ -1467,15 +1629,57 @@ function Find-AdapterByIdentifier {
         Write-AppLog "Get-NetAdapter failed: $($_.Exception.Message)" 'ERROR'
         return $null
     }
-    foreach ($a in $adapters) {
-        if ($ByName -and $a.Name -eq $ByName) { return $a }
-        if ($ByMac) {
-            $normIn = $ByMac          -replace '[:\-\s]', ''
-            $normA  = $a.MacAddress   -replace '[:\-\s]', ''
-            if ($normA -ieq $normIn) { return $a }
+
+    if ($ByName) {
+        $resolvedAdapters = @($adapters | Where-Object { $_.Name -eq $ByName })
+        if ($resolvedAdapters.Count -eq 1) { return $resolvedAdapters[0] }
+        if ($resolvedAdapters.Count -gt 1) {
+            Write-AppLog "Adapter name '$ByName' is ambiguous. Use -Guid or -Mac to choose one adapter." 'ERROR'
+            foreach ($resolvedAdapter in $resolvedAdapters) {
+                Write-AppLog ("  " + (Format-AdapterCandidate -Adapter $resolvedAdapter)) 'WARN'
+            }
+            return $null
         }
-        if ($ByGuid -and $a.InterfaceGuid -eq $ByGuid) { return $a }
+        Write-AppLog "No visible adapter named '$ByName'." 'ERROR'
+        Write-AdapterMatchCandidate -Adapters $adapters -Query $ByName
+        return $null
     }
+
+    if ($ByMac) {
+        $normIn = $ByMac -replace '[:\-\s]', ''
+        if (-not $normIn) {
+            Write-AppLog 'MAC address is empty after normalization.' 'ERROR'
+            return $null
+        }
+        $resolvedAdapters = @($adapters | Where-Object { (($_.MacAddress -replace '[:\-\s]', '') -ieq $normIn) })
+        if ($resolvedAdapters.Count -eq 1) { return $resolvedAdapters[0] }
+        if ($resolvedAdapters.Count -gt 1) {
+            Write-AppLog "MAC '$ByMac' matched multiple visible adapters. Use -Guid to choose one adapter." 'ERROR'
+            foreach ($resolvedAdapter in $resolvedAdapters) {
+                Write-AppLog ("  " + (Format-AdapterCandidate -Adapter $resolvedAdapter)) 'WARN'
+            }
+            return $null
+        }
+        Write-AppLog "No visible adapter with MAC '$ByMac'." 'ERROR'
+        Write-AdapterMatchCandidate -Adapters $adapters -Query $ByMac
+        return $null
+    }
+
+    if ($ByGuid) {
+        $resolvedAdapters = @($adapters | Where-Object { $_.InterfaceGuid -eq $ByGuid })
+        if ($resolvedAdapters.Count -eq 1) { return $resolvedAdapters[0] }
+        if ($resolvedAdapters.Count -gt 1) {
+            Write-AppLog "GUID '$ByGuid' matched multiple visible adapters; refusing to choose automatically." 'ERROR'
+            foreach ($resolvedAdapter in $resolvedAdapters) {
+                Write-AppLog ("  " + (Format-AdapterCandidate -Adapter $resolvedAdapter)) 'WARN'
+            }
+            return $null
+        }
+        Write-AppLog "No visible adapter with GUID '$ByGuid'." 'ERROR'
+        Write-AdapterMatchCandidate -Adapters $adapters -Query $ByGuid
+        return $null
+    }
+
     return $null
 }
 #endregion
@@ -1507,6 +1711,18 @@ if ($script:IsCli) {
     if ($UninstallWatcher) {
         Write-AppLog "AdapterLock v$($script:Version) removing WMI drift watcher"
         Uninstall-WmiWatcher
+        exit 0
+    }
+    if ($ListAdapters) {
+        $format = if ($OutputFormat) { $OutputFormat } else { 'Table' }
+        if ($format -eq 'Html') {
+            Write-AppLog 'Use -Report for Html output; -ListAdapters supports Table, Json, and Csv' 'ERROR'
+            exit 2
+        }
+        Write-AppLog "AdapterLock v$($script:Version) listing adapters"
+        $records = @(Get-AdapterInventory)
+        if ($records.Count -eq 0) { exit 1 }
+        Export-AdapterInventoryData -Data $records -Format $format -OutputFile $OutputFile
         exit 0
     }
     if ($ListBackups) {
@@ -1868,7 +2084,7 @@ if ($script:IsCli) {
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="AdapterLock" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-                        <TextBlock x:Name="VersionText" Text=" v0.8.8" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
+                        <TextBlock x:Name="VersionText" Text=" v0.8.9" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
                     </StackPanel>
                     <TextBlock Margin="0,6,24,0"
                                Text="Protect static NIC configuration with adapter-specific registry ACL enforcement. Select adapters, review state, and apply lock policies without changing unrelated interfaces."
@@ -2624,6 +2840,10 @@ function Get-UiWorkerScript {
         'Lock-Adapter',
         'Unlock-Adapter',
         'Get-AdapterRow',
+        'Get-StringDistance',
+        'Format-AdapterCandidate',
+        'Get-AdapterMatchCandidate',
+        'Write-AdapterMatchCandidate',
         'Find-AdapterByIdentifier'
     )
 

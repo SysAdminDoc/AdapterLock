@@ -131,6 +131,96 @@ Describe 'AdapterLock core functions' {
         (Find-AdapterByIdentifier -ByGuid '{22222222-2222-2222-2222-222222222222}').Name | Should -Be 'PACS Link'
     }
 
+    It 'refuses ambiguous adapter names' {
+        Import-AdapterLockFunction -Name 'Get-StringDistance', 'Format-AdapterCandidate', 'Get-AdapterMatchCandidate', 'Write-AdapterMatchCandidate', 'Find-AdapterByIdentifier'
+        Mock -CommandName Get-NetAdapter -MockWith {
+            @(
+                [pscustomobject]@{
+                    Name = 'Ethernet'
+                    MacAddress = 'AA-BB-CC-DD-EE-FF'
+                    InterfaceGuid = '{11111111-1111-1111-1111-111111111111}'
+                    Status = 'Up'
+                }
+                [pscustomobject]@{
+                    Name = 'Ethernet'
+                    MacAddress = '11-22-33-44-55-66'
+                    InterfaceGuid = '{22222222-2222-2222-2222-222222222222}'
+                    Status = 'Disconnected'
+                }
+            )
+        }
+
+        $result = Find-AdapterByIdentifier -ByName 'Ethernet'
+
+        $result | Should -BeNullOrEmpty
+        ($script:LogMessages.Message -join "`n") | Should -Match 'ambiguous'
+        ($script:LogMessages.Message -join "`n") | Should -Match 'Use -Guid or -Mac'
+    }
+
+    It 'logs closest visible candidates for failed adapter name matches' {
+        Import-AdapterLockFunction -Name 'Get-StringDistance', 'Format-AdapterCandidate', 'Get-AdapterMatchCandidate', 'Write-AdapterMatchCandidate', 'Find-AdapterByIdentifier'
+        Mock -CommandName Get-NetAdapter -MockWith {
+            @(
+                [pscustomobject]@{
+                    Name = 'Ethernet'
+                    InterfaceDescription = 'Intel Ethernet'
+                    MacAddress = 'AA-BB-CC-DD-EE-FF'
+                    InterfaceGuid = '{11111111-1111-1111-1111-111111111111}'
+                    Status = 'Up'
+                }
+                [pscustomobject]@{
+                    Name = 'PACS Link'
+                    InterfaceDescription = 'Dedicated imaging NIC'
+                    MacAddress = '11-22-33-44-55-66'
+                    InterfaceGuid = '{22222222-2222-2222-2222-222222222222}'
+                    Status = 'Up'
+                }
+            )
+        }
+
+        $result = Find-AdapterByIdentifier -ByName 'PACS'
+
+        $result | Should -BeNullOrEmpty
+        ($script:LogMessages.Message -join "`n") | Should -Match 'Closest visible adapter candidates'
+        ($script:LogMessages.Message -join "`n") | Should -Match 'PACS Link'
+    }
+
+    It 'lists visible and hidden adapter identifiers for CLI discovery' {
+        Import-AdapterLockFunction -Name 'Get-AdapterDhcpState', 'Get-AdapterLockState', 'Get-AdapterInventory', 'Select-AdapterInventoryRecord', 'Export-AdapterInventoryData'
+        Mock -CommandName Get-NetAdapter -MockWith {
+            $visible = [pscustomobject]@{
+                Name = 'Ethernet'
+                InterfaceDescription = 'Intel Ethernet'
+                MacAddress = 'AA-BB-CC-DD-EE-FF'
+                InterfaceGuid = '{11111111-1111-1111-1111-111111111111}'
+                ifIndex = 4
+                Status = 'Up'
+            }
+            $hidden = [pscustomobject]@{
+                Name = 'PACS Link'
+                InterfaceDescription = 'Disconnected imaging NIC'
+                MacAddress = '11-22-33-44-55-66'
+                InterfaceGuid = '{22222222-2222-2222-2222-222222222222}'
+                ifIndex = 12
+                Status = 'Disconnected'
+            }
+            if ($IncludeHidden) { return @($visible, $hidden) }
+            return @($visible)
+        }
+        Mock -CommandName Test-Path -MockWith { $true }
+        Mock -CommandName Get-ItemPropertyValue -MockWith { 0 }
+        Mock -CommandName Get-Acl -MockWith { New-FakeAcl -AccessControlType 'Allow' }
+
+        $records = @(Get-AdapterInventory)
+        $json = Export-AdapterInventoryData -Data $records -Format Json
+        $parsed = $json | ConvertFrom-Json
+
+        $records.Count | Should -Be 2
+        ($records | Where-Object { $_.Visibility -eq 'Hidden' }).Name | Should -Be 'PACS Link'
+        $parsed[0].PSObject.Properties.Name | Should -Contain 'GUID'
+        $parsed[0].PSObject.Properties.Name | Should -Contain 'LockState'
+    }
+
     It 'round-trips exported lock policy JSON' {
         Import-AdapterLockFunction -Name 'Export-LockPolicy', 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
         $script:Version = 'test'
@@ -190,16 +280,16 @@ Describe 'AdapterLock core functions' {
         Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
 
         $badStatePath = Join-Path $TestDrive 'bad-state.json'
-        @{ Version = '0.8.8'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @{ Version = '0.8.9'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
         @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
 
         $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
-        @{ Version = '0.8.8'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @{ Version = '0.8.9'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
         @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
 
         $duplicatePath = Join-Path $TestDrive 'duplicate.json'
         @{
-            Version = '0.8.8'
+            Version = '0.8.9'
             Adapters = @(
                 @{ Name = 'Ethernet'; State = 'locked' }
                 @{ Name = 'Ethernet'; State = 'locked' }
@@ -579,6 +669,10 @@ Describe 'AdapterLock core functions' {
             'Lock-Adapter',
             'Unlock-Adapter',
             'Get-AdapterRow',
+            'Get-StringDistance',
+            'Format-AdapterCandidate',
+            'Get-AdapterMatchCandidate',
+            'Write-AdapterMatchCandidate',
             'Find-AdapterByIdentifier'
         $script:Version = 'test'
         $script:LogPath = Join-Path $TestDrive 'adapterlock.log'

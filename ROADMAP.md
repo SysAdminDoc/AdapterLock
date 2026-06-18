@@ -6,13 +6,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
 
 ### P2
 
-- [ ] P2 -- Add CLI adapter discovery and ambiguity feedback
-  Why: CLI users must know exact names, MACs, or GUIDs before acting, while competitor and community issues show adapter discovery/refresh is a recurring failure point.
-  Evidence: `AdapterLock.ps1:1137`, `AdapterLock.ps1:1144`; Simple IP Config issue #206; Net Profiles mod dynamic-interface issue #75.
-  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
-  Acceptance: `-ListAdapters -Silent` outputs visible/hidden adapter identifiers in table/JSON modes, failed matches include nearest visible candidates, and ambiguous names do not perform ACL writes.
-  Complexity: S
-
 - [ ] P2 -- Add accessibility and compact-layout regression checks
   Why: The v0.8.0 UI was render-checked manually, but there is no repeatable focus/name/contrast/overflow guard.
   Evidence: `CLAUDE.md:43`; Simple IP Config scaling issues #181/#204/#209.

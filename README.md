@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.8.8-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.8.9-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -84,6 +84,10 @@ Changes take effect immediately — no reboot, no service restart.
 # Lock by adapter name
 .\AdapterLock.ps1 -Lock -Adapter "Ethernet" -Silent
 
+# Discover exact adapter names, MACs, and GUIDs before locking
+.\AdapterLock.ps1 -ListAdapters -Silent
+.\AdapterLock.ps1 -ListAdapters -OutputFormat Json -Silent
+
 # Lock by MAC address (separators normalised automatically)
 .\AdapterLock.ps1 -Lock -Mac "AA:BB:CC:DD:EE:FF" -Silent
 
@@ -139,6 +143,8 @@ Changes take effect immediately — no reboot, no service restart.
 .\AdapterLock.ps1 -Report -ComputerName (Get-Content hosts.txt) -OutputFormat Csv -OutputFile report.csv
 ```
 
+Adapter matching for writes is exact. If a name, MAC, or GUID is missing or ambiguous, AdapterLock refuses to change ACLs and logs the closest visible candidates with stable identifiers.
+
 Exit codes: `0` = success, `1` = adapter not found / operation failed / drift still detected after remediation, `2` = bad arguments.
 
 ## Verifying the lock
@@ -185,4 +191,4 @@ Package builds emit `AdapterLock-v<version>.sha256.txt` and `AdapterLock-v<versi
 
 ## Version
 
-v0.8.8
+v0.8.9

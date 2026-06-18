@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.9 - 2026-06-18
+
+### Added
+- **CLI adapter discovery** -- `-ListAdapters` now lists visible and hidden adapter identifiers in table, JSON, or CSV output.
+
+### Changed
+- **Safer adapter resolution** -- failed and ambiguous CLI matches now log closest visible candidates and refuse ACL writes instead of choosing implicitly.
+
 ## v0.8.8 - 2026-06-18
 
 ### Changed
