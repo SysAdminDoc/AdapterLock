@@ -6,13 +6,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
 
 ### P2
 
-- [ ] P2 -- Add accessibility and compact-layout regression checks
-  Why: The v0.8.0 UI was render-checked manually, but there is no repeatable focus/name/contrast/overflow guard.
-  Evidence: `CLAUDE.md:43`; Simple IP Config scaling issues #181/#204/#209.
-  Touches: `AdapterLock.ps1`, `build.ps1`, test tooling.
-  Acceptance: validation captures at least compact and default WPF layouts, checks no clipped primary controls, verifies focusable controls have names/tooltips, and records any manual-only accessibility gaps.
-  Complexity: M
-
 ### P3
 
 - [ ] P3 -- Add an optional compact read-only status mode

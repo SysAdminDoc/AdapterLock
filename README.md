@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.8.10-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.8.11-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -191,8 +191,9 @@ Invoke-ScriptAnalyzer -Path .\AdapterLock.ps1 -Severity Error,Warning
 ```
 
 `.\build.ps1 -Validate` runs PSScriptAnalyzer with the repository settings and fails on warnings/errors before running Pester. `.\build.ps1 -Package` also writes `dist\deployment\` with Intune detection/remediation samples, an RMM JSON verification sample, a GPO scheduled-task XML template, and a plain-text deployment checklist.
+Validation also loads the real WPF XAML at default and compact sizes, checks primary controls for measurable layout, and verifies accessible names, content, or tooltips. Full elevated lock/unlock GUI interaction remains a manual check because it requires an administrative desktop session.
 Package builds emit `AdapterLock-v<version>.sha256.txt` and `AdapterLock-v<version>-provenance.json`. `build-exe.ps1` requires an explicitly installed `ps2exe` module, checks its minimum version, emits exe hashes/provenance, and labels the exe as unsigned until Authenticode signing is configured.
 
 ## Version
 
-v0.8.10
+v0.8.11

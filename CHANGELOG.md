@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.11 - 2026-06-18
+
+### Added
+- **WPF layout/accessibility validation** -- build validation now loads the real XAML at default and compact sizes, checks primary controls for measurable layout, and verifies accessible names, content, or tooltips.
+
 ## v0.8.10 - 2026-06-18
 
 ### Added

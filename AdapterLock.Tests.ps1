@@ -305,16 +305,16 @@ Describe 'AdapterLock core functions' {
         Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
 
         $badStatePath = Join-Path $TestDrive 'bad-state.json'
-        @{ Version = '0.8.10'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @{ Version = '0.8.11'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
         @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
 
         $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
-        @{ Version = '0.8.10'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @{ Version = '0.8.11'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
         @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
 
         $duplicatePath = Join-Path $TestDrive 'duplicate.json'
         @{
-            Version = '0.8.10'
+            Version = '0.8.11'
             Adapters = @(
                 @{ Name = 'Ethernet'; State = 'locked' }
                 @{ Name = 'Ethernet'; State = 'locked' }
@@ -711,6 +711,53 @@ Describe 'AdapterLock core functions' {
 
         $errors.Count | Should -Be 0
         $worker | Should -Match 'param\(\$WorkerArgument\)'
+    }
+
+    It 'loads default and compact WPF layouts with named primary controls' {
+        Add-Type -AssemblyName PresentationFramework
+        Add-Type -AssemblyName PresentationCore
+        Add-Type -AssemblyName WindowsBase
+
+        $scriptText = Get-Content -LiteralPath $script:AdapterLockScript -Raw
+        $match = [regex]::Match($scriptText, "(?s)\[xml\]\`$xaml\s*=\s*@'\r?\n(?<xaml>.*?)\r?\n'@")
+        $match.Success | Should -BeTrue
+        $xamlText = $match.Groups['xaml'].Value
+        $sizes = @(
+            @{ Width = 1180; Height = 760; Name = 'default' }
+            @{ Width = 980; Height = 720; Name = 'compact' }
+        )
+
+        foreach ($size in $sizes) {
+            $xml = [xml]$xamlText
+            $reader = New-Object System.Xml.XmlNodeReader $xml
+            $window = [Windows.Markup.XamlReader]::Load($reader)
+            try {
+                $window.Width = $size.Width
+                $window.Height = $size.Height
+                $window.Left = -32000
+                $window.Top = -32000
+                $window.ShowInTaskbar = $false
+                $window.Show()
+                $window.UpdateLayout()
+
+                $window.ActualWidth | Should -BeGreaterThan 900
+                $window.ActualHeight | Should -BeGreaterThan 680
+
+                foreach ($name in @('FilterBox','AdapterGrid','LockBtn','UnlockBtn','RefreshBtn','SavePolicyBtn','LoadPolicyBtn','OpenNcpaBtn','OpenLogBtn','ToggleHiddenBtn','LogBox')) {
+                    $control = $window.FindName($name)
+                    $control | Should -Not -BeNullOrEmpty
+                    $control.ActualWidth | Should -BeGreaterThan 0
+                    $control.ActualHeight | Should -BeGreaterThan 0
+
+                    $automationName = [System.Windows.Automation.AutomationProperties]::GetName($control)
+                    $content = if ($control.PSObject.Properties['Content']) { [string]$control.Content } else { '' }
+                    $tooltip = if ($control.PSObject.Properties['ToolTip']) { [string]$control.ToolTip } else { '' }
+                    [bool]($automationName -or $content -or $tooltip) | Should -BeTrue
+                }
+            } finally {
+                if ($window) { $window.Close() }
+            }
+        }
     }
 
     It 'classifies NIC types' {
