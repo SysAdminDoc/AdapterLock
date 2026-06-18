@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.6 - 2026-06-17
+
+### Changed
+- **Build provenance** -- package and exe builds now emit SHA256 manifests and provenance JSON; `build-exe.ps1` no longer auto-installs `ps2exe`, checks a minimum module version, records the `ps2exe` version, and labels unsigned exe artifacts clearly.
+
 ## v0.8.5 - 2026-06-17
 
 ### Added

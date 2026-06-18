@@ -16,6 +16,21 @@ function Write-TextFile {
     Set-Content -LiteralPath $Path -Value $Content.TrimStart() -Encoding ASCII -ErrorAction Stop
 }
 
+function Get-Sha256Hash {
+    param([string]$Path)
+    $stream = [System.IO.File]::OpenRead((Resolve-Path -LiteralPath $Path).Path)
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToUpperInvariant()
+        } finally {
+            $sha.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function New-DeploymentKit {
     param(
         [string]$Root,
@@ -126,6 +141,43 @@ AdapterLock v$Version deployment checklist
     return $kitDir
 }
 
+function New-HashManifest {
+    param(
+        [string[]]$Path,
+        [string]$OutputFile
+    )
+    $lines = foreach ($p in $Path) {
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
+        $hash = Get-Sha256Hash -Path $p
+        "{0}  {1}" -f $hash.ToLowerInvariant(), (Split-Path $p -Leaf)
+    }
+    Set-Content -LiteralPath $OutputFile -Value $lines -Encoding ASCII -ErrorAction Stop
+}
+
+function New-PackageProvenance {
+    param(
+        [string]$Version,
+        [string[]]$Path,
+        [string]$OutputFile
+    )
+    $artifacts = foreach ($p in $Path) {
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
+        $item = Get-Item -LiteralPath $p
+        [pscustomobject]@{
+            Name = $item.Name
+            Length = $item.Length
+            SHA256 = Get-Sha256Hash -Path $p
+        }
+    }
+    [pscustomobject]@{
+        Project = 'AdapterLock'
+        Version = $Version
+        GeneratedAt = (Get-Date -Format 'o')
+        Signing = 'Unsigned; Authenticode signing is tracked in Roadmap_Blocked.md'
+        Artifacts = @($artifacts)
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $OutputFile -Encoding UTF8 -ErrorAction Stop
+}
+
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     $packageManagement = Get-Module -ListAvailable PackageManagement |
         Where-Object { $_.Path -like '*WindowsPowerShell*' } |
@@ -206,6 +258,15 @@ if ($Package) {
     $filesToZip = $filesToZip | Where-Object { Test-Path $_ }
     Compress-Archive -Path $filesToZip -DestinationPath $zipPath -Force
     Write-Host "--- Archive: $zipPath ---"
+
+    $manifestPaths = @($destScript, $zipPath)
+    $manifestPath = Join-Path $OutputDir "AdapterLock-v$version.sha256.txt"
+    New-HashManifest -Path $manifestPaths -OutputFile $manifestPath
+    Write-Host "--- SHA256: $manifestPath ---"
+
+    $provenancePath = Join-Path $OutputDir "AdapterLock-v$version-provenance.json"
+    New-PackageProvenance -Version $version -Path $manifestPaths -OutputFile $provenancePath
+    Write-Host "--- Provenance: $provenancePath ---"
 }
 
 Write-Host '--- Done ---'

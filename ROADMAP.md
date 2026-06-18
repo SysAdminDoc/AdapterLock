@@ -6,13 +6,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
 
 ### P1
 
-- [ ] P1 -- Harden exe/package build provenance
-  Why: `build-exe.ps1` auto-installs `ps2exe` and emits no SHA256 or provenance manifest for the unsigned executable.
-  Evidence: `build-exe.ps1:11`, `build-exe.ps1:23`; Simple IP Config unknown-publisher and Defender issue signals.
-  Touches: `build-exe.ps1`, `build.ps1`, `README.md`.
-  Acceptance: builds require an explicit ps2exe prerequisite or pinned version check, emit SHA256 hashes for script/zip/exe artifacts, record ps2exe version, and clearly label unsigned artifacts until code signing is available.
-  Complexity: M
-
 - [ ] P1 -- Gate builds with analyzer and high-risk behavior tests
   Why: README documents ScriptAnalyzer, but `build.ps1` does not run it; current tests miss report encoding, watcher WQL, policy state safety, and remediation exit behavior.
   Evidence: `README.md:151`, `build.ps1:29`, `build.ps1:44`, `AdapterLock.Tests.ps1:252`.
