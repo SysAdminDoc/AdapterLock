@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.10 - 2026-06-18
+
+### Added
+- **PowerShell safety semantics** -- state-changing CLI paths now support native `-WhatIf` and `-Confirm` behavior while preserving existing `-DryRun` previews.
+
 ## v0.8.9 - 2026-06-18
 
 ### Added

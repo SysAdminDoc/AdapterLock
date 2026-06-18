@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.8.9
+.VERSION 0.8.10
 .GUID fd499ba1-8ce6-4512-877e-9dede49777f5
 .AUTHOR SysAdminDoc
 .DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
@@ -7,7 +7,7 @@
 .TAGS networking adapter lock registry ACL IP security PACS
 .LICENSEURI https://github.com/SysAdminDoc/AdapterLock/blob/master/LICENSE
 .PROJECTURI https://github.com/SysAdminDoc/AdapterLock
-.RELEASENOTES Adds CLI adapter discovery output and safer ambiguous adapter resolution.
+.RELEASENOTES Adds PowerShell WhatIf/Confirm guards around state-changing CLI paths.
 #>
 
 <#
@@ -131,7 +131,7 @@
     https://github.com/SysAdminDoc/AdapterLock
 #>
 #Requires -Version 5.1
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess=$true, ConfirmImpact='Medium')]
 param(
     [switch]$Lock,
     [switch]$Unlock,
@@ -162,7 +162,8 @@ param(
 
 
 $script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $ListAdapters.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $ListBackups.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent -or $InstallWatcher.IsPresent -or $UninstallWatcher.IsPresent -or $Report.IsPresent
-$script:IsDryRun = $DryRun.IsPresent
+$script:IsDryRun = $DryRun.IsPresent -or $WhatIfPreference
+$script:RootCmdlet = $PSCmdlet
 
 
 #region Self-elevate + hide console
@@ -219,7 +220,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.8.9'
+$script:Version   = '0.8.10'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -260,6 +261,16 @@ function Write-EvtLog {
     } catch {
         Write-AppLog "Event log write failed: $($_.Exception.Message)" 'WARN'
     }
+}
+
+function Test-ShouldProcessChange {
+    [CmdletBinding(SupportsShouldProcess=$true)]
+    param(
+        [string]$Target,
+        [string]$Action
+    )
+    if (-not $script:IsCli -or -not $script:RootCmdlet) { return $true }
+    return [bool]$script:RootCmdlet.ShouldProcess($Target, $Action)
 }
 
 function Get-NicType {
@@ -1078,10 +1089,18 @@ function Lock-Adapter {
     }
 
     if ($Preview -or $script:IsDryRun) {
+        if ($WhatIfPreference) {
+            [void](Test-ShouldProcessChange -Target "$Name ($Guid)" -Action 'Apply AdapterLock deny ACEs')
+        }
         Write-AppLog "DRY-RUN Lock $Name ($Guid) - Deny ACE would be applied to:" 'INFO'
         foreach ($p in $paths) {
             Write-AppLog ("  {0} [exists={1}]" -f $p, (Test-Path -LiteralPath $p)) 'INFO'
         }
+        return $true
+    }
+
+    if (-not (Test-ShouldProcessChange -Target "$Name ($Guid)" -Action 'Apply AdapterLock deny ACEs')) {
+        Write-AppLog "Skipped lock for $Name ($Guid) by ShouldProcess" 'INFO'
         return $true
     }
 
@@ -1119,10 +1138,18 @@ function Unlock-Adapter {
     $paths = Get-InterfaceKeyPath -Guid $Guid
 
     if ($Preview -or $script:IsDryRun) {
+        if ($WhatIfPreference) {
+            [void](Test-ShouldProcessChange -Target "$Name ($Guid)" -Action 'Remove AdapterLock deny ACEs')
+        }
         Write-AppLog "DRY-RUN Unlock $Name ($Guid) - Deny ACEs would be removed from:" 'INFO'
         foreach ($p in $paths) {
             Write-AppLog ("  {0} [exists={1}]" -f $p, (Test-Path -LiteralPath $p)) 'INFO'
         }
+        return $true
+    }
+
+    if (-not (Test-ShouldProcessChange -Target "$Name ($Guid)" -Action 'Remove AdapterLock deny ACEs')) {
+        Write-AppLog "Skipped unlock for $Name ($Guid) by ShouldProcess" 'INFO'
         return $true
     }
 
@@ -1690,16 +1717,25 @@ if ($script:IsCli) {
 
     if ($InstallTask) {
         Write-AppLog "AdapterLock v$($script:Version) installing enforcement task"
+        if (-not (Test-ShouldProcessChange -Target 'scheduled task AdapterLock-Enforce' -Action 'Install enforcement task')) {
+            exit 0
+        }
         $ok = Install-EnforcementTask -PolicyPath $PolicyFile
         if ($ok) { exit 0 } else { exit 1 }
     }
     if ($UninstallTask) {
         Write-AppLog "AdapterLock v$($script:Version) uninstalling enforcement task"
+        if (-not (Test-ShouldProcessChange -Target 'scheduled task AdapterLock-Enforce' -Action 'Uninstall enforcement task')) {
+            exit 0
+        }
         Uninstall-EnforcementTask
         exit 0
     }
     if ($InstallWatcher) {
         Write-AppLog "AdapterLock v$($script:Version) installing WMI drift watcher"
+        if (-not (Test-ShouldProcessChange -Target 'WMI AdapterLock drift watcher' -Action 'Install permanent WMI event subscriptions')) {
+            exit 0
+        }
         try {
             Install-WmiWatcher
             exit 0
@@ -1710,6 +1746,9 @@ if ($script:IsCli) {
     }
     if ($UninstallWatcher) {
         Write-AppLog "AdapterLock v$($script:Version) removing WMI drift watcher"
+        if (-not (Test-ShouldProcessChange -Target 'WMI AdapterLock drift watcher' -Action 'Remove permanent WMI event subscriptions')) {
+            exit 0
+        }
         Uninstall-WmiWatcher
         exit 0
     }
@@ -1747,6 +1786,9 @@ if ($script:IsCli) {
         }
         $target = Find-AdapterByIdentifier -ByGuid $Guid
         $name = if ($target) { $target.Name } else { $Guid }
+        if (-not (Test-ShouldProcessChange -Target "$name ($Guid)" -Action 'Restore adapter registry ACL backup')) {
+            exit 0
+        }
         $ok = Restore-AdapterSddl -Guid $Guid -Name $name -BackupFile $BackupFile
         if ($ok) { exit 0 } else { exit 1 }
     }
@@ -1754,7 +1796,7 @@ if ($script:IsCli) {
         Write-AppLog "AdapterLock v$($script:Version) loading policy: $LoadPolicy"
         $policy = Import-LockPolicy -Path $LoadPolicy
         if ($policy.Count -eq 0) { exit 1 }
-        $policyResults = @(Invoke-LockPolicy -Policy $policy -Preview:$DryRun)
+        $policyResults = @(Invoke-LockPolicy -Policy $policy -Preview:$script:IsDryRun)
         $failures = @($policyResults | Where-Object { $_.Status -in @('NotFound', 'Failed') })
         if ($failures.Count -gt 0) { exit 1 }
         exit 0
@@ -1833,9 +1875,9 @@ if ($script:IsCli) {
 
     Write-AppLog "Target: $($target.Name) ($($target.InterfaceGuid))"
     $ok = if ($Lock) {
-        Lock-Adapter   -Guid $target.InterfaceGuid -Name $target.Name -Preview:$DryRun
+        Lock-Adapter   -Guid $target.InterfaceGuid -Name $target.Name -Preview:$script:IsDryRun
     } else {
-        Unlock-Adapter -Guid $target.InterfaceGuid -Name $target.Name -Preview:$DryRun
+        Unlock-Adapter -Guid $target.InterfaceGuid -Name $target.Name -Preview:$script:IsDryRun
     }
     if ($ok) { exit 0 } else { exit 1 }
 }
@@ -2084,7 +2126,7 @@ if ($script:IsCli) {
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="AdapterLock" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-                        <TextBlock x:Name="VersionText" Text=" v0.8.9" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
+                        <TextBlock x:Name="VersionText" Text=" v0.8.10" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
                     </StackPanel>
                     <TextBlock Margin="0,6,24,0"
                                Text="Protect static NIC configuration with adapter-specific registry ACL enforcement. Select adapters, review state, and apply lock policies without changing unrelated interfaces."
@@ -2811,6 +2853,7 @@ function Get-UiWorkerScript {
     $functionNames = @(
         'Write-AppLog',
         'Write-EvtLog',
+        'Test-ShouldProcessChange',
         'Get-NicType',
         'Get-NicTypeGlyph',
         'Get-RegistryLastWrite',

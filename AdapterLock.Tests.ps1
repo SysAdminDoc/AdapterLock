@@ -62,6 +62,9 @@ Describe 'AdapterLock core functions' {
 
     BeforeEach {
         $script:LogMessages = @()
+        $script:IsCli = $false
+        $script:IsDryRun = $false
+        $script:RootCmdlet = $null
         function Write-AppLog {
             param([string]$Message, [string]$Level = 'INFO')
             $script:LogMessages += [pscustomobject]@{
@@ -107,6 +110,28 @@ Describe 'AdapterLock core functions' {
 
         $result | Should -Be $true
         ($script:LogMessages.Message -join "`n") | Should -Match 'DRY-RUN Unlock Ethernet'
+    }
+
+    It 'honors ShouldProcess before writing adapter ACLs' {
+        Import-AdapterLockFunction -Name 'Test-ShouldProcessChange', 'Get-InterfaceKeyPath', 'Get-AdapterDhcpState', 'Save-AdapterSddl', 'Lock-Adapter'
+        $script:IsCli = $true
+        $script:ShouldProcessCalls = 0
+        $script:RootCmdlet = [pscustomobject]@{}
+        $script:RootCmdlet | Add-Member -MemberType ScriptMethod -Name ShouldProcess -Value {
+            param([string]$Target, [string]$Action)
+            $script:ShouldProcessCalls++
+            return $false
+        }
+        Mock -CommandName Test-Path -MockWith { $true }
+        Mock -CommandName Get-ItemPropertyValue -MockWith { 0 }
+        Mock -CommandName Get-Acl -MockWith { throw 'Get-Acl should not be called when ShouldProcess returns false' }
+        Mock -CommandName Set-Acl -MockWith { throw 'Set-Acl should not be called when ShouldProcess returns false' }
+
+        $result = Lock-Adapter -Guid '{11111111-1111-1111-1111-111111111111}' -Name 'Ethernet'
+
+        $result | Should -Be $true
+        $script:ShouldProcessCalls | Should -Be 1
+        Should -Invoke -CommandName Set-Acl -Times 0
     }
 
     It 'finds adapters by name, MAC, and GUID' {
@@ -280,16 +305,16 @@ Describe 'AdapterLock core functions' {
         Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
 
         $badStatePath = Join-Path $TestDrive 'bad-state.json'
-        @{ Version = '0.8.9'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @{ Version = '0.8.10'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
         @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
 
         $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
-        @{ Version = '0.8.9'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @{ Version = '0.8.10'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
         @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
 
         $duplicatePath = Join-Path $TestDrive 'duplicate.json'
         @{
-            Version = '0.8.9'
+            Version = '0.8.10'
             Adapters = @(
                 @{ Name = 'Ethernet'; State = 'locked' }
                 @{ Name = 'Ethernet'; State = 'locked' }
@@ -640,6 +665,7 @@ Describe 'AdapterLock core functions' {
             'Get-UiWorkerScript',
             'Write-AppLog',
             'Write-EvtLog',
+            'Test-ShouldProcessChange',
             'Get-NicType',
             'Get-NicTypeGlyph',
             'Get-RegistryLastWrite',

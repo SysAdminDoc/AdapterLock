@@ -13,13 +13,6 @@ Per-adapter IP lockdown for Windows via registry ACL deny ACEs.
   Acceptance: validation captures at least compact and default WPF layouts, checks no clipped primary controls, verifies focusable controls have names/tooltips, and records any manual-only accessibility gaps.
   Complexity: M
 
-- [ ] P2 -- Add PowerShell `SupportsShouldProcess` compatibility around state changes
-  Why: AdapterLock has `-DryRun`, but PowerShell admins expect `-WhatIf`/`-Confirm` semantics for registry ACL changes.
-  Evidence: `Lock-Adapter` and `Unlock-Adapter` state changes at `AdapterLock.ps1:680`, `AdapterLock.ps1:725`; PowerShell ShouldProcess guidance.
-  Touches: `AdapterLock.ps1`, `AdapterLock.Tests.ps1`, `README.md`.
-  Acceptance: state-changing CLI paths support `-WhatIf` without writes, existing `-DryRun` behavior remains compatible, and tests prove no `Set-Acl` call occurs under preview modes.
-  Complexity: M
-
 ### P3
 
 - [ ] P3 -- Add an optional compact read-only status mode

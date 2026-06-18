@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.8.9-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.8.10-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -100,6 +100,10 @@ Changes take effect immediately — no reboot, no service restart.
 # Preview only — shows what would change, no registry writes
 .\AdapterLock.ps1 -Lock -Adapter "Ethernet" -Silent -DryRun
 
+# Native PowerShell preview/confirmation semantics are also supported
+.\AdapterLock.ps1 -Lock -Adapter "Ethernet" -Silent -WhatIf
+.\AdapterLock.ps1 -Unlock -Adapter "Ethernet" -Silent -Confirm
+
 # Load and apply a policy file
 .\AdapterLock.ps1 -LoadPolicy C:\policy.json -Silent
 
@@ -191,4 +195,4 @@ Package builds emit `AdapterLock-v<version>.sha256.txt` and `AdapterLock-v<versi
 
 ## Version
 
-v0.8.9
+v0.8.10
