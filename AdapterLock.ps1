@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.8.11
+.VERSION 0.8.12
 .GUID fd499ba1-8ce6-4512-877e-9dede49777f5
 .AUTHOR SysAdminDoc
 .DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
@@ -7,7 +7,7 @@
 .TAGS networking adapter lock registry ACL IP security PACS
 .LICENSEURI https://github.com/SysAdminDoc/AdapterLock/blob/master/LICENSE
 .PROJECTURI https://github.com/SysAdminDoc/AdapterLock
-.RELEASENOTES Adds WPF compact/default layout and accessibility smoke coverage to validation.
+.RELEASENOTES Fixes self-elevation forwarding for array parameters such as ComputerName.
 #>
 
 <#
@@ -175,6 +175,35 @@ function Test-Admin {
     return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function ConvertTo-ProcessArgument {
+    param([object]$Value)
+    $text = [string]$Value
+    return '"' + ($text -replace '"', '\"') + '"'
+}
+
+function Add-ForwardedParameterArgument {
+    param(
+        [System.Collections.Generic.List[string]]$Arguments,
+        [string]$Name,
+        [object]$Value
+    )
+
+    if ($Value -is [System.Management.Automation.SwitchParameter]) {
+        if ($Value.IsPresent) { $Arguments.Add("-$Name") }
+        return
+    }
+    if ($null -eq $Value) { return }
+
+    $Arguments.Add("-$Name")
+    if ($Value -is [System.Array] -and $Value -isnot [string]) {
+        foreach ($item in $Value) {
+            $Arguments.Add((ConvertTo-ProcessArgument -Value $item))
+        }
+        return
+    }
+    $Arguments.Add((ConvertTo-ProcessArgument -Value $Value))
+}
+
 if (-not (Test-Admin)) {
     $psi          = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = (Get-Process -Id $PID).Path
@@ -184,11 +213,7 @@ if (-not (Test-Admin)) {
     $fwd = [System.Collections.Generic.List[string]]::new()
     $fwd.AddRange([string[]]@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`""))
     foreach ($kv in $PSBoundParameters.GetEnumerator()) {
-        if ($kv.Value -is [System.Management.Automation.SwitchParameter]) {
-            if ($kv.Value.IsPresent) { $fwd.Add("-$($kv.Key)") }
-        } else {
-            $fwd.Add("-$($kv.Key)"); $fwd.Add("`"$($kv.Value)`"")
-        }
+        Add-ForwardedParameterArgument -Arguments $fwd -Name $kv.Key -Value $kv.Value
     }
     $psi.Arguments = $fwd -join ' '
     try {
@@ -220,7 +245,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.8.11'
+$script:Version   = '0.8.12'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -2126,7 +2151,7 @@ if ($script:IsCli) {
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="AdapterLock" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-                        <TextBlock x:Name="VersionText" Text=" v0.8.11" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
+                        <TextBlock x:Name="VersionText" Text=" v0.8.12" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
                     </StackPanel>
                     <TextBlock Margin="0,6,24,0"
                                Text="Protect static NIC configuration with adapter-specific registry ACL enforcement. Select adapters, review state, and apply lock policies without changing unrelated interfaces."

@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.12 - 2026-06-18
+
+### Fixed
+- **Self-elevation argument forwarding** -- UAC relaunch now preserves scalar, switch, and array parameters such as `-ComputerName host1,host2` instead of forwarding `System.String[]`.
+
 ## v0.8.11 - 2026-06-18
 
 ### Added

@@ -134,6 +134,20 @@ Describe 'AdapterLock core functions' {
         Should -Invoke -CommandName Set-Acl -Times 0
     }
 
+    It 'forwards scalar, array, and switch parameters through self-elevation' {
+        Import-AdapterLockFunction -Name 'ConvertTo-ProcessArgument', 'Add-ForwardedParameterArgument'
+        $arguments = [System.Collections.Generic.List[string]]::new()
+
+        Add-ForwardedParameterArgument -Arguments $arguments -Name 'Query' -Value ([System.Management.Automation.SwitchParameter]::Present)
+        Add-ForwardedParameterArgument -Arguments $arguments -Name 'ComputerName' -Value @('host1', 'host2')
+        Add-ForwardedParameterArgument -Arguments $arguments -Name 'OutputFile' -Value 'C:\Reports\adapter "fleet".json'
+
+        $arguments | Should -Contain '-Query'
+        ($arguments -join ' ') | Should -Match '-ComputerName "host1" "host2"'
+        ($arguments -join ' ') | Should -Match '-OutputFile "C:\\Reports\\adapter \\"fleet\\".json"'
+        ($arguments -join ' ') | Should -Not -Match 'System\.String\[\]'
+    }
+
     It 'finds adapters by name, MAC, and GUID' {
         Import-AdapterLockFunction -Name 'Find-AdapterByIdentifier'
         Mock -CommandName Get-NetAdapter -MockWith {
@@ -305,16 +319,16 @@ Describe 'AdapterLock core functions' {
         Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
 
         $badStatePath = Join-Path $TestDrive 'bad-state.json'
-        @{ Version = '0.8.11'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @{ Version = '0.8.12'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
         @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
 
         $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
-        @{ Version = '0.8.11'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @{ Version = '0.8.12'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
         @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
 
         $duplicatePath = Join-Path $TestDrive 'duplicate.json'
         @{
-            Version = '0.8.11'
+            Version = '0.8.12'
             Adapters = @(
                 @{ Name = 'Ethernet'; State = 'locked' }
                 @{ Name = 'Ethernet'; State = 'locked' }
