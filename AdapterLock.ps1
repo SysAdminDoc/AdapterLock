@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.8.13
+.VERSION 0.8.14
 .GUID fd499ba1-8ce6-4512-877e-9dede49777f5
 .AUTHOR SysAdminDoc
 .DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
@@ -178,6 +178,25 @@ $script:IsCompactMode = $Compact.IsPresent
 #region Self-elevate + hide console
 $ErrorActionPreference = 'Stop'
 
+function ConvertTo-ComputerNameList {
+    param([AllowNull()][string[]]$Value)
+
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @($Value)) {
+        if ($null -eq $entry) { continue }
+        foreach ($part in ([string]$entry -split ',')) {
+            $trimmed = $part.Trim()
+            if ($trimmed) { $names.Add($trimmed) }
+        }
+    }
+    return @($names)
+}
+
+$ComputerName = ConvertTo-ComputerNameList -Value $ComputerName
+if ($PSBoundParameters.ContainsKey('ComputerName')) {
+    $PSBoundParameters['ComputerName'] = $ComputerName
+}
+
 function Test-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     $p  = New-Object Security.Principal.WindowsPrincipal($id)
@@ -203,13 +222,14 @@ function Add-ForwardedParameterArgument {
     }
     if ($null -eq $Value) { return }
 
-    $Arguments.Add("-$Name")
     if ($Value -is [System.Array] -and $Value -isnot [string]) {
-        foreach ($item in $Value) {
-            $Arguments.Add((ConvertTo-ProcessArgument -Value $item))
-        }
+        $items = @($Value | ForEach-Object { [string]$_ } | Where-Object { $_ })
+        if ($items.Count -eq 0) { return }
+        $Arguments.Add("-$Name")
+        $Arguments.Add((ConvertTo-ProcessArgument -Value ($items -join ',')))
         return
     }
+    $Arguments.Add("-$Name")
     $Arguments.Add((ConvertTo-ProcessArgument -Value $Value))
 }
 
@@ -254,7 +274,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.8.13'
+$script:Version   = '0.8.14'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -1380,7 +1400,7 @@ function Export-LockData {
     $records = @(Select-LockOutputRecord -Data $Data)
     switch ($Format) {
         'Json' {
-            $content = $records | ConvertTo-Json -Depth 4
+            $content = ConvertTo-Json -InputObject $records -Depth 4
             if ($OutputFile) {
                 Set-Content -LiteralPath $OutputFile -Value $content -Encoding UTF8 -ErrorAction Stop
                 Write-AppLog "JSON output written: $OutputFile ($($records.Count) rows)" 'OK'
@@ -1397,7 +1417,15 @@ function Export-LockData {
             }
         }
         'Table' {
-            $records | Format-Table -AutoSize
+            if ($OutputFile) {
+                $records |
+                    Format-Table Computer, Adapter, GUID, Locked, Detail, Mode -AutoSize |
+                    Out-String |
+                    Set-Content -LiteralPath $OutputFile -Encoding UTF8 -ErrorAction Stop
+                Write-AppLog "Table output written: $OutputFile ($($records.Count) rows)" 'OK'
+            } else {
+                $records | Format-Table -AutoSize
+            }
         }
     }
 }
@@ -1582,7 +1610,7 @@ function Export-AdapterInventoryData {
     $records = @(Select-AdapterInventoryRecord -Data $Data)
     switch ($Format) {
         'Json' {
-            $content = $records | ConvertTo-Json -Depth 4
+            $content = ConvertTo-Json -InputObject $records -Depth 4
             if ($OutputFile) {
                 Set-Content -LiteralPath $OutputFile -Value $content -Encoding UTF8 -ErrorAction Stop
                 Write-AppLog "Adapter inventory JSON written: $OutputFile ($($records.Count) rows)" 'OK'
@@ -1651,11 +1679,11 @@ function Get-AdapterMatchCandidate {
     if (-not $Query) { return @($Adapters | Select-Object -First $Max) }
 
     $needle = $Query.ToLowerInvariant()
-    $needleMac = $Query -replace '[:\-\s]', ''
+    $needleMac = $Query -replace '[:\-\s\.]', ''
     $ranked = foreach ($adapter in $Adapters) {
         $name = ([string]$adapter.Name).ToLowerInvariant()
         $description = ([string]$adapter.InterfaceDescription).ToLowerInvariant()
-        $mac = ([string]$adapter.MacAddress) -replace '[:\-\s]', ''
+        $mac = ([string]$adapter.MacAddress) -replace '[:\-\s\.]', ''
         $guidText = ([string]$adapter.InterfaceGuid).ToLowerInvariant()
         $distance = Get-StringDistance -Left $needle -Right $name
         if ($description.Contains($needle)) { $distance = [Math]::Min($distance, 2) }
@@ -1707,12 +1735,12 @@ function Find-AdapterByIdentifier {
     }
 
     if ($ByMac) {
-        $normIn = $ByMac -replace '[:\-\s]', ''
+        $normIn = $ByMac -replace '[:\-\s\.]', ''
         if (-not $normIn) {
             Write-AppLog 'MAC address is empty after normalization.' 'ERROR'
             return $null
         }
-        $resolvedAdapters = @($adapters | Where-Object { (($_.MacAddress -replace '[:\-\s]', '') -ieq $normIn) })
+        $resolvedAdapters = @($adapters | Where-Object { (($_.MacAddress -replace '[:\-\s\.]', '') -ieq $normIn) })
         if ($resolvedAdapters.Count -eq 1) { return $resolvedAdapters[0] }
         if ($resolvedAdapters.Count -gt 1) {
             Write-AppLog "MAC '$ByMac' matched multiple visible adapters. Use -Guid to choose one adapter." 'ERROR'
@@ -2160,7 +2188,7 @@ if ($script:IsCli) {
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="AdapterLock" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-                        <TextBlock x:Name="VersionText" Text=" v0.8.13" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
+                        <TextBlock x:Name="VersionText" Text=" v0.8.14" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
                     </StackPanel>
                     <TextBlock x:Name="HeaderDescription" Margin="0,6,24,0"
                                Text="Protect static NIC configuration with adapter-specific registry ACL enforcement. Select adapters, review state, and apply lock policies without changing unrelated interfaces."
@@ -2845,13 +2873,15 @@ $ctxRestore  = Get-CMMenuItem 'Restore from Backup'
 $ctxNcpa     = Get-CMMenuItem 'Open in ncpa.cpl'
 $ctxCopyMac  = Get-CMMenuItem 'Copy MAC'
 $ctxCopyGuid = Get-CMMenuItem 'Copy GUID'
+$ctxWriteSeparator = New-Object System.Windows.Controls.Separator
+$ctxCopySeparator = New-Object System.Windows.Controls.Separator
 
 [void]$ctxMenu.Items.Add($ctxLock)
 [void]$ctxMenu.Items.Add($ctxUnlock)
 [void]$ctxMenu.Items.Add($ctxRestore)
-[void]$ctxMenu.Items.Add((New-Object System.Windows.Controls.Separator))
+[void]$ctxMenu.Items.Add($ctxWriteSeparator)
 [void]$ctxMenu.Items.Add($ctxNcpa)
-[void]$ctxMenu.Items.Add((New-Object System.Windows.Controls.Separator))
+[void]$ctxMenu.Items.Add($ctxCopySeparator)
 [void]$ctxMenu.Items.Add($ctxCopyMac)
 [void]$ctxMenu.Items.Add($ctxCopyGuid)
 
@@ -3284,6 +3314,7 @@ function Show-CompactUiMode {
     foreach ($item in @($ctxLock, $ctxUnlock, $ctxRestore)) {
         if ($item) { $item.Visibility = 'Collapsed' }
     }
+    if ($ctxWriteSeparator) { $ctxWriteSeparator.Visibility = 'Collapsed' }
 
     foreach ($column in @($script:AdapterGrid.Columns)) {
         if ($column.Header -in @('Description','MAC','Changed')) {

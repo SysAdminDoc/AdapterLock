@@ -135,15 +135,17 @@ Describe 'AdapterLock core functions' {
     }
 
     It 'forwards scalar, array, and switch parameters through self-elevation' {
-        Import-AdapterLockFunction -Name 'ConvertTo-ProcessArgument', 'Add-ForwardedParameterArgument'
+        Import-AdapterLockFunction -Name 'ConvertTo-ComputerNameList', 'ConvertTo-ProcessArgument', 'Add-ForwardedParameterArgument'
         $arguments = [System.Collections.Generic.List[string]]::new()
+        $names = @(ConvertTo-ComputerNameList -Value @('host1, host2', ' host3 '))
 
         Add-ForwardedParameterArgument -Arguments $arguments -Name 'Query' -Value ([System.Management.Automation.SwitchParameter]::Present)
-        Add-ForwardedParameterArgument -Arguments $arguments -Name 'ComputerName' -Value @('host1', 'host2')
+        Add-ForwardedParameterArgument -Arguments $arguments -Name 'ComputerName' -Value $names
         Add-ForwardedParameterArgument -Arguments $arguments -Name 'OutputFile' -Value 'C:\Reports\adapter "fleet".json'
 
+        $names.Count | Should -Be 3
         $arguments | Should -Contain '-Query'
-        ($arguments -join ' ') | Should -Match '-ComputerName "host1" "host2"'
+        ($arguments -join ' ') | Should -Match '-ComputerName "host1,host2,host3"'
         ($arguments -join ' ') | Should -Match '-OutputFile "C:\\Reports\\adapter \\"fleet\\".json"'
         ($arguments -join ' ') | Should -Not -Match 'System\.String\[\]'
     }
@@ -167,6 +169,7 @@ Describe 'AdapterLock core functions' {
 
         (Find-AdapterByIdentifier -ByName 'Ethernet').InterfaceGuid | Should -Be '{11111111-1111-1111-1111-111111111111}'
         (Find-AdapterByIdentifier -ByMac '112233445566').Name | Should -Be 'PACS Link'
+        (Find-AdapterByIdentifier -ByMac '11.22.33.44.55.66').Name | Should -Be 'PACS Link'
         (Find-AdapterByIdentifier -ByGuid '{22222222-2222-2222-2222-222222222222}').Name | Should -Be 'PACS Link'
     }
 
@@ -254,6 +257,7 @@ Describe 'AdapterLock core functions' {
         $json = Export-AdapterInventoryData -Data $records -Format Json
         $parsed = $json | ConvertFrom-Json
 
+        $json.TrimStart() | Should -Match '^\['
         $records.Count | Should -Be 2
         ($records | Where-Object { $_.Visibility -eq 'Hidden' }).Name | Should -Be 'PACS Link'
         $parsed[0].PSObject.Properties.Name | Should -Contain 'GUID'
@@ -319,16 +323,16 @@ Describe 'AdapterLock core functions' {
         Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
 
         $badStatePath = Join-Path $TestDrive 'bad-state.json'
-        @{ Version = '0.8.13'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @{ Version = '0.8.14'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
         @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
 
         $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
-        @{ Version = '0.8.13'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @{ Version = '0.8.14'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
         @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
 
         $duplicatePath = Join-Path $TestDrive 'duplicate.json'
         @{
-            Version = '0.8.13'
+            Version = '0.8.14'
             Adapters = @(
                 @{ Name = 'Ethernet'; State = 'locked' }
                 @{ Name = 'Ethernet'; State = 'locked' }
@@ -590,6 +594,7 @@ Describe 'AdapterLock core functions' {
 
         $json = Export-LockData -Data $data -Format Json
         $parsed = $json | ConvertFrom-Json
+        $json.TrimStart() | Should -Match '^\['
         $parsed[0].Computer | Should -Be 'HOST1'
         $parsed[0].PSObject.Properties.Name | Should -Contain 'Mode'
         $parsed[0].PSObject.Properties.Name | Should -Not -Contain 'Extra'
@@ -793,6 +798,59 @@ Describe 'AdapterLock core functions' {
             } finally {
                 if ($window) { $window.Close() }
             }
+        }
+    }
+
+    It 'applies compact read-only WPF chrome without orphaned write-menu separators' {
+        Add-Type -AssemblyName PresentationFramework
+        Add-Type -AssemblyName PresentationCore
+        Add-Type -AssemblyName WindowsBase
+
+        Import-AdapterLockFunction -Name 'Show-CompactUiMode', 'Get-LastDriftSummary'
+
+        $scriptText = Get-Content -LiteralPath $script:AdapterLockScript -Raw
+        $match = [regex]::Match($scriptText, "(?s)\[xml\]\`$xaml\s*=\s*@'\r?\n(?<xaml>.*?)\r?\n'@")
+        $match.Success | Should -BeTrue
+        $xml = [xml]$match.Groups['xaml'].Value
+        $reader = New-Object System.Xml.XmlNodeReader $xml
+        $global:window = [Windows.Markup.XamlReader]::Load($reader)
+        try {
+            $script:IsCompactMode = $true
+            $script:LogPath = Join-Path $TestDrive 'missing.log'
+            $script:HeaderDescription = $global:window.FindName('HeaderDescription')
+            $script:TrustBadgePanel = $global:window.FindName('TrustBadgePanel')
+            $script:AdapterGrid = $global:window.FindName('AdapterGrid')
+            $script:StatusText = $global:window.FindName('StatusText')
+            $script:LastDriftText = $global:window.FindName('LastDriftText')
+            $global:LockBtn = $global:window.FindName('LockBtn')
+            $global:UnlockBtn = $global:window.FindName('UnlockBtn')
+            $global:SavePolicyBtn = $global:window.FindName('SavePolicyBtn')
+            $global:LoadPolicyBtn = $global:window.FindName('LoadPolicyBtn')
+            $global:ReportBtn = $global:window.FindName('ReportBtn')
+            $global:ctxLock = New-Object System.Windows.Controls.MenuItem
+            $global:ctxUnlock = New-Object System.Windows.Controls.MenuItem
+            $global:ctxRestore = New-Object System.Windows.Controls.MenuItem
+            $global:ctxWriteSeparator = New-Object System.Windows.Controls.Separator
+            $global:ctxCopySeparator = New-Object System.Windows.Controls.Separator
+
+            Show-CompactUiMode
+
+            $global:LockBtn.Visibility | Should -Be 'Collapsed'
+            $global:UnlockBtn.Visibility | Should -Be 'Collapsed'
+            $global:SavePolicyBtn.Visibility | Should -Be 'Collapsed'
+            $global:LoadPolicyBtn.Visibility | Should -Be 'Collapsed'
+            $global:ReportBtn.Visibility | Should -Be 'Visible'
+            $global:ctxLock.Visibility | Should -Be 'Collapsed'
+            $global:ctxUnlock.Visibility | Should -Be 'Collapsed'
+            $global:ctxRestore.Visibility | Should -Be 'Collapsed'
+            $global:ctxWriteSeparator.Visibility | Should -Be 'Collapsed'
+            $global:ctxCopySeparator.Visibility | Should -Be 'Visible'
+            $script:AdapterGrid.SelectionMode | Should -Be 'Single'
+            ($global:window.Content.RowDefinitions[4].Height.Value) | Should -Be 0
+            $script:StatusText.Text | Should -Match 'Compact read-only status mode'
+        } finally {
+            if ($global:window) { $global:window.Close() }
+            Remove-Variable -Name window,LockBtn,UnlockBtn,SavePolicyBtn,LoadPolicyBtn,ReportBtn,ctxLock,ctxUnlock,ctxRestore,ctxWriteSeparator,ctxCopySeparator -Scope Global -ErrorAction SilentlyContinue
         }
     }
 

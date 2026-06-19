@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.14 - 2026-06-19
+
+### Fixed
+- **Fleet argument preservation** -- elevated relaunch and `powershell.exe -File` paths now preserve every comma-delimited `-ComputerName` target instead of dropping array values after the first host.
+- **Machine-readable output shape** -- JSON query and adapter-list exports now remain arrays even when only one adapter row is returned.
+- **Adapter matching polish** -- dotted MAC address input now normalizes consistently with colon, hyphen, and plain MAC formats.
+- **Compact context menu polish** -- read-only compact mode no longer leaves write-action separators visible after hiding lock, unlock, and restore actions.
+
 ## v0.8.13 - 2026-06-19
 
 ### Added
