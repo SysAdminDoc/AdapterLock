@@ -319,16 +319,16 @@ Describe 'AdapterLock core functions' {
         Import-AdapterLockFunction -Name 'Import-LockPolicy', 'ConvertTo-PolicyGuid', 'ConvertTo-PolicyMac', 'Get-PolicyIdentifierKey'
 
         $badStatePath = Join-Path $TestDrive 'bad-state.json'
-        @{ Version = '0.8.12'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
+        @{ Version = '0.8.13'; Adapters = @(@{ Name = 'Ethernet'; State = 'maybe' }) } | ConvertTo-Json -Depth 3 | Set-Content $badStatePath
         @(Import-LockPolicy -Path $badStatePath).Count | Should -Be 0
 
         $badGuidPath = Join-Path $TestDrive 'bad-guid.json'
-        @{ Version = '0.8.12'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
+        @{ Version = '0.8.13'; Adapters = @(@{ GUID = 'not-a-guid'; State = 'locked' }) } | ConvertTo-Json -Depth 3 | Set-Content $badGuidPath
         @(Import-LockPolicy -Path $badGuidPath).Count | Should -Be 0
 
         $duplicatePath = Join-Path $TestDrive 'duplicate.json'
         @{
-            Version = '0.8.12'
+            Version = '0.8.13'
             Adapters = @(
                 @{ Name = 'Ethernet'; State = 'locked' }
                 @{ Name = 'Ethernet'; State = 'locked' }
@@ -553,6 +553,27 @@ Describe 'AdapterLock core functions' {
         $html | Should -Not -Match '<script>'
     }
 
+    It 'converts visible adapter rows into local report records' {
+        Import-AdapterLockFunction -Name 'ConvertTo-LocalReportRecord'
+        $rows = @(
+            [pscustomobject]@{
+                Name = 'Ethernet'
+                Guid = '{11111111-1111-1111-1111-111111111111}'
+                LockBadge = 'PARTIAL'
+                LockDetail = 'Locked: IPv4; Open: IPv6'
+                ConfigMode = 'Static'
+            }
+        )
+
+        $records = @(ConvertTo-LocalReportRecord -Rows $rows)
+
+        $records.Count | Should -Be 1
+        $records[0].Computer | Should -Not -BeNullOrEmpty
+        $records[0].Adapter | Should -Be 'Ethernet'
+        $records[0].Locked | Should -Be 'PARTIAL'
+        $records[0].Mode | Should -Be 'Static'
+    }
+
     It 'emits stable JSON and CSV fleet output records' {
         Import-AdapterLockFunction -Name 'Export-LockData', 'Select-LockOutputRecord'
         $data = @(
@@ -757,7 +778,7 @@ Describe 'AdapterLock core functions' {
                 $window.ActualWidth | Should -BeGreaterThan 900
                 $window.ActualHeight | Should -BeGreaterThan 680
 
-                foreach ($name in @('FilterBox','AdapterGrid','LockBtn','UnlockBtn','RefreshBtn','SavePolicyBtn','LoadPolicyBtn','OpenNcpaBtn','OpenLogBtn','ToggleHiddenBtn','LogBox')) {
+                foreach ($name in @('HeaderDescription','FilterBox','AdapterGrid','LockBtn','UnlockBtn','RefreshBtn','SavePolicyBtn','LoadPolicyBtn','OpenNcpaBtn','OpenLogBtn','ReportBtn','ToggleHiddenBtn','LogBox','LastDriftText')) {
                     $control = $window.FindName($name)
                     $control | Should -Not -BeNullOrEmpty
                     $control.ActualWidth | Should -BeGreaterThan 0
@@ -765,8 +786,9 @@ Describe 'AdapterLock core functions' {
 
                     $automationName = [System.Windows.Automation.AutomationProperties]::GetName($control)
                     $content = if ($control.PSObject.Properties['Content']) { [string]$control.Content } else { '' }
+                    $text = if ($control.PSObject.Properties['Text']) { [string]$control.Text } else { '' }
                     $tooltip = if ($control.PSObject.Properties['ToolTip']) { [string]$control.ToolTip } else { '' }
-                    [bool]($automationName -or $content -or $tooltip) | Should -BeTrue
+                    [bool]($automationName -or $content -or $text -or $tooltip) | Should -BeTrue
                 }
             } finally {
                 if ($window) { $window.Close() }

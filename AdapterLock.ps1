@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.8.12
+.VERSION 0.8.13
 .GUID fd499ba1-8ce6-4512-877e-9dede49777f5
 .AUTHOR SysAdminDoc
 .DESCRIPTION Per-adapter IP lockdown for Windows via registry ACL deny ACEs. WPF GUI and headless CLI.
@@ -7,7 +7,7 @@
 .TAGS networking adapter lock registry ACL IP security PACS
 .LICENSEURI https://github.com/SysAdminDoc/AdapterLock/blob/master/LICENSE
 .PROJECTURI https://github.com/SysAdminDoc/AdapterLock
-.RELEASENOTES Fixes self-elevation forwarding for array parameters such as ComputerName.
+.RELEASENOTES Adds compact read-only status mode and GUI report export/open action.
 #>
 
 <#
@@ -47,6 +47,9 @@
 
 .PARAMETER DryRun
     Preview which registry keys would be modified without writing any ACL changes.
+
+.PARAMETER Compact
+    Launch a compact read-only status window for monitoring lock state, exporting reports, and opening logs.
 
 .PARAMETER ListAdapters
     List visible and hidden adapters with stable identifiers and lock state for CLI discovery.
@@ -104,6 +107,10 @@
     Launch the WPF GUI for interactive lock/unlock.
 
 .EXAMPLE
+    .\AdapterLock.ps1 -Compact
+    Launch a compact read-only status window.
+
+.EXAMPLE
     .\AdapterLock.ps1 -Lock -Adapter "Ethernet" -Silent
     Lock the adapter named "Ethernet" in headless mode.
 
@@ -140,6 +147,7 @@ param(
     [string]$Guid,
     [switch]$Silent,
     [switch]$DryRun,
+    [switch]$Compact,
     [switch]$ListAdapters,
     [string]$LoadPolicy,
     [switch]$RestoreBackup,
@@ -164,6 +172,7 @@ param(
 $script:IsCli    = $Silent.IsPresent -or $Lock.IsPresent -or $Unlock.IsPresent -or $ListAdapters.IsPresent -or $LoadPolicy -or $RestoreBackup.IsPresent -or $ListBackups.IsPresent -or $InstallTask.IsPresent -or $UninstallTask.IsPresent -or $VerifyLocks.IsPresent -or $Query.IsPresent -or $InstallWatcher.IsPresent -or $UninstallWatcher.IsPresent -or $Report.IsPresent
 $script:IsDryRun = $DryRun.IsPresent -or $WhatIfPreference
 $script:RootCmdlet = $PSCmdlet
+$script:IsCompactMode = $Compact.IsPresent
 
 
 #region Self-elevate + hide console
@@ -245,7 +254,7 @@ if (-not $script:IsCli) {
     Add-Type -AssemblyName System.Windows.Forms
 }
 
-$script:Version   = '0.8.12'
+$script:Version   = '0.8.13'
 $script:LogPath   = Join-Path $env:APPDATA   'AdapterLock\adapterlock.log'
 $script:BackupDir = Join-Path $env:ProgramData 'AdapterLock\Backups'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $script:LogPath) -ErrorAction SilentlyContinue
@@ -2151,12 +2160,12 @@ if ($script:IsCli) {
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="AdapterLock" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-                        <TextBlock x:Name="VersionText" Text=" v0.8.12" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
+                        <TextBlock x:Name="VersionText" Text=" v0.8.13" FontSize="13" Foreground="{StaticResource Subtext}" VerticalAlignment="Bottom" Margin="6,0,0,5"/>
                     </StackPanel>
-                    <TextBlock Margin="0,6,24,0"
+                    <TextBlock x:Name="HeaderDescription" Margin="0,6,24,0"
                                Text="Protect static NIC configuration with adapter-specific registry ACL enforcement. Select adapters, review state, and apply lock policies without changing unrelated interfaces."
                                Foreground="{StaticResource Subtext}" FontSize="14" TextWrapping="Wrap" MaxWidth="720"/>
-                    <WrapPanel Margin="0,2,0,0">
+                    <WrapPanel x:Name="TrustBadgePanel" Margin="0,2,0,0">
                         <Border Style="{StaticResource TrustBadge}">
                             <TextBlock Text="ACL-level enforcement" Foreground="{StaticResource Subtext}" FontSize="12"/>
                         </Border>
@@ -2324,6 +2333,8 @@ if ($script:IsCli) {
                         ToolTip="Open Windows network connections"/>
                 <Button x:Name="OpenLogBtn" Content="Logs" Style="{StaticResource QuietButtonStyle}" Margin="0,0,8,0"
                         ToolTip="Open the AdapterLock log folder"/>
+                <Button x:Name="ReportBtn" Content="Report" Style="{StaticResource QuietButtonStyle}" Margin="0,0,8,0"
+                        ToolTip="Export and open an HTML report for the currently visible adapters"/>
                 <Button x:Name="ToggleHiddenBtn" Content="Show Hidden" Style="{StaticResource QuietButtonStyle}"
                         ToolTip="Show unplugged and hidden adapters"/>
             </WrapPanel>
@@ -2360,7 +2371,7 @@ if ($script:IsCli) {
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock x:Name="StatusText" Grid.Column="0" Text="Ready." Foreground="{StaticResource Subtext}" TextTrimming="CharacterEllipsis"/>
-                <TextBlock Grid.Column="1" Text="Elevated session | Changes apply immediately"
+                <TextBlock x:Name="LastDriftText" Grid.Column="1" Text="No drift events recorded"
                            Foreground="{StaticResource Surface2}" FontSize="12" Margin="12,0,0,0"/>
             </Grid>
         </Border>
@@ -2379,7 +2390,10 @@ $script:StatusText  = $window.FindName('StatusText')
 $script:VersionText = $window.FindName('VersionText')
 $script:FilterBox   = $window.FindName('FilterBox')
 $script:FilterCountText = $window.FindName('FilterCountText')
+$script:HeaderDescription = $window.FindName('HeaderDescription')
+$script:TrustBadgePanel = $window.FindName('TrustBadgePanel')
 $script:SelectionSummaryText = $window.FindName('SelectionSummaryText')
+$script:LastDriftText = $window.FindName('LastDriftText')
 $script:EmptyStatePanel = $window.FindName('EmptyStatePanel')
 $script:EmptyStateTitle = $window.FindName('EmptyStateTitle')
 $script:EmptyStateBody = $window.FindName('EmptyStateBody')
@@ -2402,6 +2416,7 @@ $SavePolicyBtn = $window.FindName('SavePolicyBtn')
 $LoadPolicyBtn = $window.FindName('LoadPolicyBtn')
 $OpenNcpaBtn = $window.FindName('OpenNcpaBtn')
 $OpenLogBtn       = $window.FindName('OpenLogBtn')
+$ReportBtn        = $window.FindName('ReportBtn')
 $ToggleHiddenBtn  = $window.FindName('ToggleHiddenBtn')
 $script:ShowHidden = $false
 
@@ -2429,6 +2444,42 @@ function Show-EmptyState {
     $script:EmptyStatePanel.Visibility = if ($Visible) { 'Visible' } else { 'Collapsed' }
 }
 
+function Get-LastDriftSummary {
+    param([int]$PartialCount = 0)
+    if ($PartialCount -gt 0) {
+        return "Partial locks visible: $PartialCount"
+    }
+    try {
+        if (Test-Path -LiteralPath $script:LogPath) {
+            $line = Get-Content -LiteralPath $script:LogPath -Tail 200 -ErrorAction Stop |
+                Where-Object { $_ -match 'DRIFT|drift' } |
+                Select-Object -Last 1
+            if ($line) {
+                $message = ($line -replace '^\[[^\]]+\]\s+\[[^\]]+\]\s+', '').Trim()
+                if ($message.Length -gt 72) { $message = $message.Substring(0, 69) + '...' }
+                return "Last drift: $message"
+            }
+        }
+    } catch {
+        return 'Last drift: unavailable'
+    }
+    return 'No drift events recorded'
+}
+
+function ConvertTo-LocalReportRecord {
+    param([object[]]$Rows)
+    foreach ($row in @($Rows)) {
+        [pscustomobject]@{
+            Computer = $env:COMPUTERNAME
+            Adapter = $row.Name
+            GUID = $row.Guid
+            Locked = $row.LockBadge
+            Detail = $row.LockDetail
+            Mode = $row.ConfigMode
+        }
+    }
+}
+
 function Show-SummaryState {
     $rows = @($script:AllRows)
     $locked = @($rows | Where-Object { $_.LockBadge -eq 'LOCKED' }).Count
@@ -2438,10 +2489,16 @@ function Show-SummaryState {
     $script:LockedCountText.Text = [string]$locked
     $script:PartialCountText.Text = [string]$partial
     $script:HiddenCountText.Text = [string]$hidden
+    if ($script:LastDriftText) {
+        $script:LastDriftText.Text = Get-LastDriftSummary -PartialCount $partial
+    }
 }
 
 function Show-SelectionState {
     if (-not $script:AdapterGrid) { return }
+    if ($script:SelectionSummaryText) {
+        $script:SelectionSummaryText.Visibility = if ($script:IsCompactMode) { 'Visible' } else { 'Collapsed' }
+    }
     if ($script:UiBusy) {
         $LockBtn.IsEnabled = $false
         $UnlockBtn.IsEnabled = $false
@@ -2450,16 +2507,24 @@ function Show-SelectionState {
     }
     $count = @($script:AdapterGrid.SelectedItems).Count
     $hasSelection = $count -gt 0
-    $LockBtn.IsEnabled = $hasSelection
-    $UnlockBtn.IsEnabled = $hasSelection
+    $LockBtn.IsEnabled = $hasSelection -and -not $script:IsCompactMode
+    $UnlockBtn.IsEnabled = $hasSelection -and -not $script:IsCompactMode
     if ($hasSelection) {
-        $script:SelectionSummaryText.Text = if ($count -eq 1) {
-            '1 selected.'
+        if ($count -eq 1) {
+            $row = $script:AdapterGrid.SelectedItem
+            $script:SelectionSummaryText.Text = "$($row.Name): $($row.LockBadge)"
+            $script:SelectionSummaryText.ToolTip = $row.LockDetail
         } else {
-            "$count selected."
+            $script:SelectionSummaryText.Text = "$count selected."
+            $script:SelectionSummaryText.ToolTip = ''
         }
     } else {
-        $script:SelectionSummaryText.Text = 'No adapters selected.'
+        $script:SelectionSummaryText.Text = if ($script:IsCompactMode) {
+            'Read-only status mode. Select an adapter to inspect lock details.'
+        } else {
+            'No adapters selected.'
+        }
+        $script:SelectionSummaryText.ToolTip = ''
     }
 }
 
@@ -2952,6 +3017,7 @@ function Show-UiBusyState {
     $ToggleHiddenBtn.IsEnabled = -not $Busy
     $OpenNcpaBtn.IsEnabled = -not $Busy
     $OpenLogBtn.IsEnabled = -not $Busy
+    $ReportBtn.IsEnabled = -not $Busy
     if ($script:AdapterGrid) { $script:AdapterGrid.IsEnabled = -not $Busy }
     if ($Busy) {
         $LockBtn.IsEnabled = $false
@@ -3182,6 +3248,59 @@ function Show-AdapterFilter {
     Show-SelectionState
 }
 
+function Export-VisibleAdapterReport {
+    param([string]$OutputFile)
+    $visibleRows = @($script:AdapterGrid.ItemsSource)
+    if ($visibleRows.Count -eq 0) {
+        $script:StatusText.Text = 'No visible adapters to report.'
+        return $false
+    }
+    $records = @(ConvertTo-LocalReportRecord -Rows $visibleRows)
+    Export-LockReport -OutputFile $OutputFile -Data $records
+    Write-AppLog "Visible adapter report exported: $OutputFile ($($records.Count) rows)" 'OK'
+    return $true
+}
+
+function Show-CompactUiMode {
+    if (-not $script:IsCompactMode) { return }
+
+    $window.Title = 'AdapterLock Status'
+    $window.Width = 760
+    $window.Height = 620
+    $window.MinWidth = 720
+    $window.MinHeight = 560
+
+    if ($script:HeaderDescription) {
+        $script:HeaderDescription.Text = 'Read-only enforcement status for adapter lock posture, drift visibility, logs, and reports.'
+        $script:HeaderDescription.MaxWidth = 520
+    }
+    if ($script:TrustBadgePanel) {
+        $script:TrustBadgePanel.Visibility = 'Collapsed'
+    }
+
+    foreach ($control in @($LockBtn, $UnlockBtn, $SavePolicyBtn, $LoadPolicyBtn)) {
+        if ($control) { $control.Visibility = 'Collapsed' }
+    }
+    foreach ($item in @($ctxLock, $ctxUnlock, $ctxRestore)) {
+        if ($item) { $item.Visibility = 'Collapsed' }
+    }
+
+    foreach ($column in @($script:AdapterGrid.Columns)) {
+        if ($column.Header -in @('Description','MAC','Changed')) {
+            $column.Visibility = 'Collapsed'
+        }
+    }
+
+    $rootGrid = $window.Content -as [System.Windows.Controls.Grid]
+    if ($rootGrid -and $rootGrid.RowDefinitions.Count -gt 4) {
+        $rootGrid.RowDefinitions[4].Height = [System.Windows.GridLength]::new(0)
+    }
+
+    $script:AdapterGrid.SelectionMode = 'Single'
+    $script:StatusText.Text = 'Compact read-only status mode. Refresh, report, logs, and connections are available.'
+    if ($script:LastDriftText) { $script:LastDriftText.Text = Get-LastDriftSummary }
+}
+
 function Invoke-SelectedAdapterAction {
     param([ValidateSet('Lock','Unlock')][string]$Action)
     $sel = @($script:AdapterGrid.SelectedItems)
@@ -3245,12 +3364,25 @@ $LoadPolicyBtn.Add_Click({
 })
 $OpenNcpaBtn.Add_Click({ try { Start-Process 'ncpa.cpl' } catch { Write-AppLog "ncpa open failed: $($_.Exception.Message)" 'ERROR' } })
 $OpenLogBtn.Add_Click({  try { Start-Process (Split-Path $script:LogPath) } catch { Write-AppLog "log folder open failed: $($_.Exception.Message)" 'ERROR' } })
+$ReportBtn.Add_Click({
+    $dlg = New-Object System.Windows.Forms.SaveFileDialog
+    $dlg.Filter = 'HTML report (*.html)|*.html'
+    $dlg.InitialDirectory = [Environment]::GetFolderPath('MyDocuments')
+    $dlg.FileName = "adapterlock-report-$((Get-Date).ToString('yyyyMMdd-HHmmss')).html"
+    if ($dlg.ShowDialog() -eq 'OK') {
+        if (Export-VisibleAdapterReport -OutputFile $dlg.FileName) {
+            $script:StatusText.Text = "Report exported: $(Split-Path $dlg.FileName -Leaf)"
+            try { Start-Process $dlg.FileName } catch { Write-AppLog "report open failed: $($_.Exception.Message)" 'WARN' }
+        }
+    }
+})
 $ToggleHiddenBtn.Add_Click({
     $script:ShowHidden = -not $script:ShowHidden
     $ToggleHiddenBtn.Content = if ($script:ShowHidden) { 'Hide Hidden' } else { 'Show Hidden' }
     $ToggleHiddenBtn.ToolTip = if ($script:ShowHidden) { 'Return to visible adapters only' } else { 'Show unplugged and hidden adapters' }
     Show-AdapterGrid
 })
+Show-CompactUiMode
 Show-SelectionState
 
 $window.Add_Loaded({

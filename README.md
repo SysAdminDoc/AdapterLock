@@ -1,6 +1,6 @@
 # AdapterLock
 
-![Version](https://img.shields.io/badge/version-0.8.12-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.8.13-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)
 
@@ -48,6 +48,9 @@ The registry ACL technique is the real solution and what this tool automates.
 
 ```powershell
 .\AdapterLock.ps1
+
+# Read-only monitoring/reporting surface
+.\AdapterLock.ps1 -Compact
 ```
 
 1. The tool self-elevates and hides its console
@@ -57,8 +60,11 @@ The registry ACL technique is the real solution and what this tool automates.
 5. Lock state is verified by re-reading the ACL and shown in the `Lock` column
 6. Use the search summary, lock counters, and empty states to confirm what is currently visible
 7. Click **Show Hidden** to reveal unplugged/ghost adapters (shown with "(hidden)" label)
+8. Click **Report** to export and open an HTML report for the currently visible adapters
 
 Adapter scans, lock/unlock, restore, and policy-apply operations run in the background so the window stays responsive while registry and network adapter state is refreshed.
+
+Compact mode is read-only: lock, unlock, restore, and policy-write actions are hidden while refresh, search, selected-adapter details, last drift status, reports, logs, and network connections remain available.
 
 The `Mode` column shows whether the adapter is DHCP or Static. Locking a DHCP adapter shows a warning because lease renewals may be blocked from updating registry values.
 
@@ -196,4 +202,4 @@ Package builds emit `AdapterLock-v<version>.sha256.txt` and `AdapterLock-v<versi
 
 ## Version
 
-v0.8.12
+v0.8.13

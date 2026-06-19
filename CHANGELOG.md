@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.13 - 2026-06-19
+
+### Added
+- **Compact read-only status mode** -- `-Compact` opens a focused monitoring surface with write actions hidden, selected-adapter detail, drift status, refresh, report, logs, and network connections.
+- **GUI report export** -- the main window now exports and opens an HTML report for the currently visible adapters.
+
 ## v0.8.12 - 2026-06-18
 
 ### Fixed
