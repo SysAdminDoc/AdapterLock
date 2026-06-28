@@ -34,7 +34,7 @@ AdapterLock is a Windows PowerShell 5.1/WPF administrative utility that locks on
 - Make drift detection an explicit desired-state loop. `Test-LockIntegrity` currently marks drift and optionally calls `Lock-Adapter` (`AdapterLock.ps1:789`, `AdapterLock.ps1:810`) but does not return post-fix truth.
 - Add report and policy security tests. The current HTML test checks structure only (`AdapterLock.Tests.ps1:252`) and policy tests do not cover `partial`, invalid state, duplicate identifiers, or GUID/MAC validation.
 - Add release and analyzer gates. README documents `Invoke-ScriptAnalyzer` (`README.md:151`), but `build.ps1` validates metadata/help/Pester only (`build.ps1:29`, `build.ps1:44`).
-- Accessibility and responsiveness remain partially verified. v0.8.0 claims WPF render checks in `CLAUDE.md:43`, but there is no automated UIA/focus/contrast regression or background worker test.
+- Accessibility and responsiveness remain partially verified. v0.8.0 claims WPF render checks, but there is no automated UIA/focus/contrast regression or background worker test.
 - Category coverage: security, reliability, observability, testing, docs, distribution, offline recovery, upgrade strategy, and accessibility all map to actionable items. i18n/l10n, plugin ecosystem, mobile, cloud multi-user, kernel drivers, and full profile switching are rejected below because they conflict with the single-file Windows enforcement tool philosophy or require external gates.
 
 ## Rejected Ideas
